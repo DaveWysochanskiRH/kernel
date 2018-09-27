@@ -3245,7 +3245,14 @@ generic_file_direct_write(struct kiocb *iocb, struct iov_iter *from)
 		}
 		iocb->ki_pos = pos;
 	}
-	iov_iter_revert(from, write_len - iov_iter_count(from));
+	{
+		size_t unroll = write_len - iov_iter_count(from);
+		if (unroll > MAX_RW_COUNT)
+			pr_warn("XXX unroll %zd [%zd - %zd]",
+				unroll, write_len, iov_iter_count(from));
+		else
+			iov_iter_revert(from, unroll);
+	}
 out:
 	return written;
 }
