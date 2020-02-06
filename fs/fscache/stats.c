@@ -56,6 +56,46 @@ atomic_t fscache_n_cache_stale_objects;
 atomic_t fscache_n_cache_retired_objects;
 atomic_t fscache_n_cache_culled_objects;
 
+atomic_t fscache_n_dispatch_count;
+atomic_t fscache_n_dispatch_deferred;
+atomic_t fscache_n_dispatch_inline;
+atomic_t fscache_n_dispatch_in_pool;
+
+atomic_t fscache_n_read;
+atomic_t fscache_n_write;
+
+atomic_t fscache_n_read_helper;
+atomic_t fscache_n_read_helper_stop_nomem;
+atomic_t fscache_n_read_helper_stop_uptodate;
+atomic_t fscache_n_read_helper_stop_exist;
+atomic_t fscache_n_read_helper_stop_kill;
+atomic_t fscache_n_read_helper_read;
+atomic_t fscache_n_read_helper_download;
+atomic_t fscache_n_read_helper_zero;
+atomic_t fscache_n_read_helper_beyond_eof;
+atomic_t fscache_n_read_helper_reissue;
+atomic_t fscache_n_read_helper_read_done;
+atomic_t fscache_n_read_helper_read_failed;
+atomic_t fscache_n_read_helper_copy;
+atomic_t fscache_n_read_helper_copy_done;
+atomic_t fscache_n_read_helper_copy_failed;
+
+EXPORT_SYMBOL(fscache_n_read_helper);
+EXPORT_SYMBOL(fscache_n_read_helper_stop_nomem);
+EXPORT_SYMBOL(fscache_n_read_helper_stop_uptodate);
+EXPORT_SYMBOL(fscache_n_read_helper_stop_exist);
+EXPORT_SYMBOL(fscache_n_read_helper_stop_kill);
+EXPORT_SYMBOL(fscache_n_read_helper_read);
+EXPORT_SYMBOL(fscache_n_read_helper_download);
+EXPORT_SYMBOL(fscache_n_read_helper_zero);
+EXPORT_SYMBOL(fscache_n_read_helper_beyond_eof);
+EXPORT_SYMBOL(fscache_n_read_helper_reissue);
+EXPORT_SYMBOL(fscache_n_read_helper_read_done);
+EXPORT_SYMBOL(fscache_n_read_helper_read_failed);
+EXPORT_SYMBOL(fscache_n_read_helper_copy);
+EXPORT_SYMBOL(fscache_n_read_helper_copy_done);
+EXPORT_SYMBOL(fscache_n_read_helper_copy_failed);
+
 /*
  * display the general statistics
  */
@@ -113,5 +153,34 @@ int fscache_stats_show(struct seq_file *m, void *v)
 		   atomic_read(&fscache_n_cache_stale_objects),
 		   atomic_read(&fscache_n_cache_retired_objects),
 		   atomic_read(&fscache_n_cache_culled_objects));
+
+	seq_printf(m, "Disp   : n=%u il=%u df=%u pl=%u\n",
+		   atomic_read(&fscache_n_dispatch_count),
+		   atomic_read(&fscache_n_dispatch_inline),
+		   atomic_read(&fscache_n_dispatch_deferred),
+		   atomic_read(&fscache_n_dispatch_in_pool));
+
+	seq_printf(m, "IO     : rd=%u wr=%u\n",
+		   atomic_read(&fscache_n_read),
+		   atomic_read(&fscache_n_write));
+
+	seq_printf(m, "RdHelp : nm=%u ud=%u ex=%u kl=%u\n",
+		   atomic_read(&fscache_n_read_helper_stop_nomem),
+		   atomic_read(&fscache_n_read_helper_stop_uptodate),
+		   atomic_read(&fscache_n_read_helper_stop_exist),
+		   atomic_read(&fscache_n_read_helper_stop_kill));
+	seq_printf(m, "RdHelp : n=%u rd=%u dl=%u zr=%u eo=%u\n",
+		   atomic_read(&fscache_n_read_helper),
+		   atomic_read(&fscache_n_read_helper_read),
+		   atomic_read(&fscache_n_read_helper_download),
+		   atomic_read(&fscache_n_read_helper_zero),
+		   atomic_read(&fscache_n_read_helper_beyond_eof));
+	seq_printf(m, "RdHelp : ri=%u dn=%u fl=%u cp=%u cd=%u cf=%u\n",
+		   atomic_read(&fscache_n_read_helper_reissue),
+		   atomic_read(&fscache_n_read_helper_read_done),
+		   atomic_read(&fscache_n_read_helper_read_failed),
+		   atomic_read(&fscache_n_read_helper_copy),
+		   atomic_read(&fscache_n_read_helper_copy_done),
+		   atomic_read(&fscache_n_read_helper_copy_failed));
 	return 0;
 }
