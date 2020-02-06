@@ -217,7 +217,6 @@ extern void __fscache_unuse_cookie(struct fscache_cookie *, const void *, const 
 extern void __fscache_relinquish_cookie(struct fscache_cookie *, bool);
 extern void __fscache_update_cookie(struct fscache_cookie *, const void *, const loff_t *);
 extern void __fscache_invalidate(struct fscache_cookie *);
-extern void __fscache_wait_on_invalidate(struct fscache_cookie *);
 extern void __fscache_shape_request(struct fscache_cookie *, struct fscache_request_shape *);
 extern void __fscache_init_io_request(struct fscache_io_request *,
 				      struct fscache_cookie *);
@@ -464,22 +463,6 @@ void fscache_invalidate(struct fscache_cookie *cookie)
 {
 	if (fscache_cookie_valid(cookie))
 		__fscache_invalidate(cookie);
-}
-
-/**
- * fscache_wait_on_invalidate - Wait for invalidation to complete
- * @cookie: The cookie representing the cache object
- *
- * Wait for the invalidation of an object to complete.
- *
- * See Documentation/filesystems/caching/netfs-api.rst for a complete
- * description.
- */
-static inline
-void fscache_wait_on_invalidate(struct fscache_cookie *cookie)
-{
-	if (fscache_cookie_valid(cookie))
-		__fscache_wait_on_invalidate(cookie);
 }
 
 /**
