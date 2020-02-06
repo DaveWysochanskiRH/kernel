@@ -22,11 +22,13 @@
 struct fscache_cache;
 struct fscache_cache_ops;
 struct fscache_object;
+struct fscache_io_operations;
 
 enum fscache_obj_ref_trace {
 	fscache_obj_get_attach,
 	fscache_obj_get_exists,
 	fscache_obj_get_inval,
+	fscache_obj_get_ioreq,
 	fscache_obj_get_wait,
 	fscache_obj_get_withdraw,
 	fscache_obj_new,
@@ -37,6 +39,7 @@ enum fscache_obj_ref_trace {
 	fscache_obj_put_drop_child,
 	fscache_obj_put_drop_obj,
 	fscache_obj_put_inval,
+	fscache_obj_put_ioreq,
 	fscache_obj_put_lookup_fail,
 	fscache_obj_put_withdraw,
 	fscache_obj_ref__nr_traces
@@ -134,6 +137,20 @@ struct fscache_cache_ops {
 
 	/* reserve space for an object's data and associated metadata */
 	int (*reserve_space)(struct fscache_object *object, loff_t i_size);
+
+	/* Shape the extent of a read or write */
+	void (*shape_request)(struct fscache_object *object,
+			      struct fscache_request_shape *shape);
+
+	/* Read data from the cache */
+	int (*read)(struct fscache_object *object,
+		    struct fscache_io_request *req,
+		    struct iov_iter *iter);
+
+	/* Write data to the cache */
+	int (*write)(struct fscache_object *object,
+		     struct fscache_io_request *req,
+		     struct iov_iter *iter);
 };
 
 extern struct fscache_cookie fscache_fsdef_index;
@@ -237,6 +254,17 @@ static inline void fscache_end_io_operation(struct fscache_cookie *cookie)
 {
 	if (atomic_dec_and_test(&cookie->n_ops))
 		wake_up_var(&cookie->n_ops);
+}
+
+static inline void fscache_get_io_request(struct fscache_io_request *req)
+{
+	req->ops->get(req);
+}
+
+static inline void fscache_put_io_request(struct fscache_io_request *req)
+{
+	if (req)
+		req->ops->put(req);
 }
 
 #endif /* _LINUX_FSCACHE_CACHE_H */
