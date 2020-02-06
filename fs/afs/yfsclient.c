@@ -392,7 +392,7 @@ static int yfs_deliver_fs_fetch_data64(struct afs_call *call)
 
 		call->unmarshall++;
 		call->iter = req->iter;
-		call->iov_len = min(req->actual_len, req->len);
+		call->iov_len = min(req->actual_len, req->cache.len);
 		/* Fall through */
 
 		/* extract the returned data */
@@ -405,17 +405,17 @@ static int yfs_deliver_fs_fetch_data64(struct afs_call *call)
 			return ret;
 
 		call->iter = &call->def_iter;
-		if (req->actual_len <= req->len)
+		if (req->actual_len <= req->cache.len)
 			goto no_more_data;
 
 		/* Discard any excess data the server gave us */
-		afs_extract_discard(call, req->actual_len - req->len);
+		afs_extract_discard(call, req->actual_len - req->cache.len);
 		call->unmarshall = 3;
 		/* Fall through */
 
 	case 3:
 		_debug("extract discard %zu/%llu",
-		       iov_iter_count(call->iter), req->actual_len - req->len);
+		       iov_iter_count(call->iter), req->actual_len - req->cache.len);
 
 		ret = afs_extract_data(call, true);
 		if (ret < 0)
@@ -450,8 +450,8 @@ static int yfs_deliver_fs_fetch_data64(struct afs_call *call)
 		break;
 	}
 
-	if (req->done)
-		req->done(req);
+	if (req->cache.io_done)
+		req->cache.io_done(&req->cache);
 
 	_leave(" = 0 [done]");
 	return 0;
@@ -479,7 +479,7 @@ void yfs_fs_fetch_data(struct afs_operation *op)
 
 	_enter(",%x,{%llx:%llu},%llx,%llx",
 	       key_serial(op->key), vp->fid.vid, vp->fid.vnode,
-	       req->pos, req->len);
+	       req->cache.pos, req->cache.len);
 
 	call = afs_alloc_flat_call(op->net, &yfs_RXYFSFetchData64,
 				   sizeof(__be32) * 2 +
@@ -498,8 +498,8 @@ void yfs_fs_fetch_data(struct afs_operation *op)
 	bp = xdr_encode_u32(bp, YFSFETCHDATA64);
 	bp = xdr_encode_u32(bp, 0); /* RPC flags */
 	bp = xdr_encode_YFSFid(bp, &vp->fid);
-	bp = xdr_encode_u64(bp, req->pos);
-	bp = xdr_encode_u64(bp, req->len);
+	bp = xdr_encode_u64(bp, req->cache.pos);
+	bp = xdr_encode_u64(bp, req->cache.len);
 	yfs_check_req(call, bp);
 
 	trace_afs_make_fs_call(call, &vp->fid);

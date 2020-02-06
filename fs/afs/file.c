@@ -199,12 +199,13 @@ int afs_release(struct inode *inode, struct file *file)
 /*
  * Handle completion of a read operation.
  */
-static void afs_file_read_done(struct afs_read *req)
+static void afs_file_read_done(struct fscache_io_request *fsreq)
 {
+	struct afs_read *req = container_of(fsreq, struct afs_read, cache);
 	struct afs_vnode *vnode = req->vnode;
 	struct page *page;
-	pgoff_t index = req->pos >> PAGE_SHIFT;
-	pgoff_t last = index + req->nr_pages - 1;
+	pgoff_t index = req->cache.pos >> PAGE_SHIFT;
+	pgoff_t last = index + req->cache.nr_pages - 1;
 
 	XA_STATE(xas, &vnode->vfs_inode.i_mapping->i_pages, index);
 
@@ -213,7 +214,7 @@ static void afs_file_read_done(struct afs_read *req)
 		_debug("afterclear %zx %zx %llx/%llx",
 		       req->iter->iov_offset,
 		       iov_iter_count(req->iter),
-		       req->actual_len, req->len);
+		       req->actual_len, req->cache.len);
 		iov_iter_zero(iov_iter_count(req->iter), req->iter);
 	}
 
@@ -224,7 +225,7 @@ static void afs_file_read_done(struct afs_read *req)
 	}
 	rcu_read_unlock();
 
-	task_io_account_read(req->len);
+	task_io_account_read(req->cache.len);
 	req->cleanup = NULL;
 }
 
@@ -234,20 +235,21 @@ static void afs_file_read_done(struct afs_read *req)
 static void afs_file_read_cleanup(struct afs_read *req)
 {
 	struct page *page;
-	pgoff_t index = req->pos >> PAGE_SHIFT;
-	pgoff_t last = index + req->nr_pages - 1;
+	pgoff_t index = req->cache.pos >> PAGE_SHIFT;
+	pgoff_t last = index + req->cache.nr_pages - 1;
 
 	if (req->iter) {
 		XA_STATE(xas, &req->iter->mapping->i_pages, index);
 
-		_enter("%lu,%u,%zu", index, req->nr_pages, iov_iter_count(req->iter));
+		_enter("%lu,%u,%zu",
+		       index, req->cache.nr_pages, iov_iter_count(req->iter));
 
 		rcu_read_lock();
 		xas_for_each(&xas, page, last) {
 			BUG_ON(xa_is_value(page));
 			BUG_ON(PageCompound(page));
 
-			page_endio(page, false, req->error);
+			page_endio(page, false, req->cache.error);
 			put_page(page);
 		}
 		rcu_read_unlock();
@@ -279,7 +281,7 @@ static void afs_fetch_data_success(struct afs_operation *op)
 
 static void afs_fetch_data_put(struct afs_operation *op)
 {
-	op->fetch.req->error = op->error;
+	op->fetch.req->cache.error = op->error;
 	afs_put_read(op->fetch.req);
 }
 
@@ -341,15 +343,15 @@ static int afs_page_filler(struct key *key, struct page *page)
 	refcount_set(&req->usage, 1);
 	req->vnode		= vnode;
 	req->key		= key_get(key);
-	req->pos		= (loff_t)page->index << PAGE_SHIFT;
-	req->len		= PAGE_SIZE;
-	req->nr_pages		= 1;
-	req->done		= afs_file_read_done;
+	req->cache.nr_pages	= 1;
+	req->cache.pos		= (loff_t)page->index << PAGE_SHIFT;
+	req->cache.len		= PAGE_SIZE;
+	req->cache.io_done	= afs_file_read_done;
 	req->cleanup		= afs_file_read_cleanup;
 
 	get_page(page);
 	iov_iter_mapping(&req->def_iter, READ, page->mapping,
-			 req->pos, req->len);
+			 req->cache.pos, req->cache.len);
 	req->iter = &req->def_iter;
 
 	ret = afs_fetch_data(vnode, req);
@@ -448,10 +450,10 @@ static int afs_readpages_one(struct file *file, struct address_space *mapping,
 	refcount_set(&req->usage, 1);
 	req->vnode = vnode;
 	req->key = key_get(afs_file_key(file));
-	req->done = afs_file_read_done;
 	req->cleanup = afs_file_read_cleanup;
-	req->pos = first->index;
-	req->pos <<= PAGE_SHIFT;
+	req->cache.io_done = afs_file_read_done;
+	req->cache.pos = first->index;
+	req->cache.pos <<= PAGE_SHIFT;
 
 	/* Add pages to the LRU until it fails.  We keep the pages ref'd and
 	 * locked until the read is complete.
@@ -471,17 +473,17 @@ static int afs_readpages_one(struct file *file, struct address_space *mapping,
 			break;
 		}
 
-		req->nr_pages++;
-	} while (req->nr_pages < n);
+		req->cache.nr_pages++;
+	} while (req->cache.nr_pages < n);
 
-	if (req->nr_pages == 0) {
+	if (req->cache.nr_pages == 0) {
 		afs_put_read(req);
 		return 0;
 	}
 
-	req->len = req->nr_pages * PAGE_SIZE;
+	req->cache.len = req->cache.nr_pages * PAGE_SIZE;
 	iov_iter_mapping(&req->def_iter, READ, file->f_mapping,
-			 req->pos, req->len);
+			 req->cache.pos, req->cache.len);
 	req->iter = &req->def_iter;
 
 	ret = afs_fetch_data(vnode, req);
