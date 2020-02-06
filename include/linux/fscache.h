@@ -42,9 +42,11 @@
 /* pattern used to fill dead space in an index entry */
 #define FSCACHE_INDEX_DEADFILL_PATTERN 0x79
 
+struct iov_iter;
 struct fscache_cache_tag;
 struct fscache_cookie;
 struct fscache_netfs;
+struct fscache_io_request_ops;
 
 enum fscache_cookie_type {
 	FSCACHE_COOKIE_TYPE_INDEX,
@@ -125,6 +127,75 @@ struct fscache_cookie {
 };
 
 /*
+ * The size and shape of a request to the cache, adjusted for cache
+ * granularity, for the data available on doing a read, the page size and
+ * non-contiguities and for the netfs's own I/O patterning.
+ *
+ * Before calling fscache_shape_request(), @proposed_start and @proposed_end
+ * must be set to indicate the bounds of the request and @max_io_pages to the
+ * limit the netfs is willing to accept on the size of an I/O operation.
+ * @i_size should be set to the size the file should be considered to be and
+ * @for_write should be set if a write request is being shaped.
+ *
+ * After shaping, @actual_start and @actual_end will mark out the size of the
+ * shaped request.  @granularity will convey the size a the cache block, should
+ * the request need to be reduced in scope, either due to memory constraints or
+ * netfs I/O constraints.  @dio_block_size will be set to the direct I/O size
+ * for the cache - fscache_read/write() can't be expected read/write chunks
+ * smaller than this or at positions that aren't aligned to this.
+ *
+ * Finally, @to_be_done will be set by the shaper to indicate whether the
+ * region can be read from the cache or filled with zeros and whether it should
+ * be written to the cache after being read from the server or cleared.
+ */
+struct fscache_request_shape {
+	/* Parameters */
+	loff_t		i_size;		/* The file size to use in calculations */
+	pgoff_t		proposed_start;	/* First page in the proposed request */
+	unsigned int	proposed_nr_pages; /* Number of pages in the proposed request */
+	unsigned int	max_io_pages;	/* Max pages in a netfs I/O request (or UINT_MAX) */
+	bool		for_write;	/* Set if shaping a write */
+
+	/* Result */
+#define FSCACHE_READ_FROM_SERVER 0x00
+#define FSCACHE_READ_FROM_CACHE	0x01
+#define FSCACHE_WRITE_TO_CACHE	0x02
+#define FSCACHE_FILL_WITH_ZERO	0x04
+	unsigned int	to_be_done;	/* What should be done by the caller */
+	unsigned int	granularity;	/* Cache granularity in pages */
+	unsigned int	dio_block_size;	/* Block size required for direct I/O */
+	unsigned int	actual_nr_pages; /* Number of pages in the shaped request */
+	pgoff_t		actual_start;	/* First page in the shaped request */
+};
+
+/*
+ * Descriptor for an fscache I/O request.
+ */
+struct fscache_io_request {
+	const struct fscache_io_request_ops *ops;
+	struct fscache_cookie	*cookie;
+	struct fscache_object	*object;
+	loff_t			pos;		/* Where to start the I/O */
+	loff_t			len;		/* Size of the I/O */
+	loff_t			transferred;	/* Amount of data transferred */
+	short			error;		/* 0 or error that occurred */
+	unsigned long		flags;
+#define FSCACHE_IO_DATA_FROM_SERVER	0	/* Set if data was read from server */
+#define FSCACHE_IO_DATA_FROM_CACHE	1	/* Set if data was read from the cache */
+#define FSCACHE_IO_SHORT_READ		2	/* Set if there was a short read from the cache */
+#define FSCACHE_IO_SEEK_DATA_READ	3	/* Set if fscache_read() should SEEK_DATA first */
+	void (*io_done)(struct fscache_io_request *);
+};
+
+struct fscache_io_request_ops {
+	bool (*is_still_valid)(struct fscache_io_request *);
+	void (*issue_op)(struct fscache_io_request *);
+	void (*done)(struct fscache_io_request *);
+	void (*get)(struct fscache_io_request *);
+	void (*put)(struct fscache_io_request *);
+};
+
+/*
  * slow-path functions for when there is actually caching available, and the
  * netfs does actually have a valid token
  * - these are not to be called directly
@@ -150,6 +221,12 @@ extern void __fscache_unuse_cookie(struct fscache_cookie *, const void *, const 
 extern void __fscache_relinquish_cookie(struct fscache_cookie *, bool);
 extern void __fscache_update_cookie(struct fscache_cookie *, const void *, const loff_t *);
 extern void __fscache_invalidate(struct fscache_cookie *);
+extern void __fscache_shape_request(struct fscache_cookie *, struct fscache_request_shape *);
+extern void __fscache_init_io_request(struct fscache_io_request *,
+				      struct fscache_cookie *);
+extern void __fscache_free_io_request(struct fscache_io_request *);
+extern int __fscache_read(struct fscache_io_request *, struct iov_iter *);
+extern int __fscache_write(struct fscache_io_request *, struct iov_iter *);
 
 /**
  * fscache_register_netfs - Register a filesystem as desiring caching services
@@ -390,6 +467,134 @@ void fscache_invalidate(struct fscache_cookie *cookie)
 {
 	if (fscache_cookie_valid(cookie))
 		__fscache_invalidate(cookie);
+}
+
+/**
+ * fscache_init_io_request - Initialise an I/O request
+ * @req: The I/O request to initialise
+ * @cookie: The I/O cookie to access
+ * @ops: The operations table to set
+ */
+static inline void fscache_init_io_request(struct fscache_io_request *req,
+					   struct fscache_cookie *cookie,
+					   const struct fscache_io_request_ops *ops)
+{
+	req->ops = ops;
+	if (fscache_cookie_valid(cookie))
+		__fscache_init_io_request(req, cookie);
+}
+
+/**
+ * fscache_free_io_request - Clean up an I/O request
+ * @req: The I/O request to clean
+ */
+static inline
+void fscache_free_io_request(struct fscache_io_request *req)
+{
+	if (req->cookie)
+		__fscache_free_io_request(req);
+}
+
+/**
+ * fscache_shape_request - Shape an request to fit cache granulation
+ * @cookie: The cache cookie to access
+ * @shape: The request proposed by the VM/filesystem (gets modified).
+ *
+ * Shape the size and position of a cache I/O request such that either the
+ * region will entirely be read from the server or entirely read from the
+ * cache.  The proposed region may be adjusted by a combination of extending
+ * the front forward and/or extending or shrinking the end.  In any case, the
+ * first page of the proposed request will be contained in the revised extent.
+ *
+ * The function sets shape->to_be_done to FSCACHE_READ_FROM_CACHE to indicate
+ * that the data is resident in the cache and can be read from there,
+ * FSCACHE_WRITE_TO_CACHE to indicate that the data isn't present, but the
+ * netfs should write it, FSCACHE_FILL_WITH_ZERO to indicate that the data
+ * should be all zeros on the server and can just be fabricated locally or
+ * FSCACHE_READ_FROM_SERVER to indicate that there's no cache or an error
+ * occurred and the netfs should just read from the server.
+ */
+static inline
+void fscache_shape_request(struct fscache_cookie *cookie,
+			   struct fscache_request_shape *shape)
+{
+	shape->to_be_done	= FSCACHE_READ_FROM_SERVER;
+	shape->granularity	= 1;
+	shape->dio_block_size	= 1;
+	shape->actual_nr_pages	= shape->proposed_nr_pages;
+	shape->actual_start	= shape->proposed_start;
+
+	if (fscache_cookie_valid(cookie))
+		__fscache_shape_request(cookie, shape);
+	else if (((loff_t)shape->proposed_start << PAGE_SHIFT) >= shape->i_size)
+		shape->to_be_done = FSCACHE_FILL_WITH_ZERO;
+}
+
+/**
+ * fscache_read - Read data from the cache.
+ * @req: The I/O request descriptor
+ * @iter: The buffer to read into
+ *
+ * The cache will attempt to read from the object referred to by the cookie,
+ * using the size and position described in the request.  The data will be
+ * transferred to the buffer described by the iterator specified in the request.
+ *
+ * If this fails or can't be done, an error will be set in the request
+ * descriptor and the netfs must reissue the read to the server.
+ *
+ * Note that the length and position of the request should be aligned to the DIO
+ * block size returned by fscache_shape_request().
+ *
+ * If req->done is set, the request will be submitted as asynchronous I/O and
+ * -EIOCBQUEUED may be returned to indicate that the operation is in progress.
+ * The done function will be called when the operation is concluded either way.
+ *
+ * If req->done is not set, the request will be submitted as synchronous I/O and
+ * will be completed before the function returns.
+ */
+static inline
+int fscache_read(struct fscache_io_request *req, struct iov_iter *iter)
+{
+	if (fscache_cookie_valid(req->cookie))
+		return __fscache_read(req, iter);
+	req->error = -ENODATA;
+	if (req->io_done)
+		req->io_done(req);
+	return -ENODATA;
+}
+
+
+/**
+ * fscache_write - Write data to the cache.
+ * @req: The I/O request description
+ * @iter: The data to write
+ *
+ * The cache will attempt to write to the object referred to by the cookie,
+ * using the size and position described in the request.  The data will be
+ * transferred from the iterator specified in the request.
+ *
+ * If this fails or can't be done, an error will be set in the request
+ * descriptor.
+ *
+ * Note that the length and position of the request should be aligned to the DIO
+ * block size returned by fscache_shape_request().
+ *
+ * If req->io_done is set, the request will be submitted as asynchronous I/O and
+ * -EIOCBQUEUED may be returned to indicate that the operation is in progress.
+ * The done function will be called when the operation is concluded either way.
+ *
+ * If req->io_done is not set, the request will be submitted as synchronous I/O and
+ * will be completed before the function returns.
+ */
+static inline
+int fscache_write(struct fscache_io_request *req, struct iov_iter *iter)
+{
+	if (fscache_cookie_valid(req->cookie))
+		return __fscache_write(req, iter);
+	req->error = -ENOBUFS;
+	if (req->io_done)
+		req->io_done(req);
+	return -ENOBUFS;
 }
 
 #endif /* _LINUX_FSCACHE_H */
