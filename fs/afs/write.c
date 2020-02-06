@@ -25,8 +25,10 @@ int afs_set_page_dirty(struct page *page)
 /*
  * Handle completion of a read operation to fill a page.
  */
-static void afs_fill_hole(struct afs_read *req)
+static void afs_fill_hole(struct fscache_io_request *fsreq)
 {
+	struct afs_read *req = container_of(fsreq, struct afs_read, cache);
+
 	if (iov_iter_count(req->iter) > 0)
 		/* The read was short - clear the excess buffer. */
 		iov_iter_zero(iov_iter_count(req->iter), req->iter);
@@ -60,13 +62,13 @@ static int afs_fill_page(struct file *file,
 		return -ENOMEM;
 
 	refcount_set(&req->usage, 1);
-	req->vnode	= vnode;
-	req->done	= afs_fill_hole;
-	req->key	= afs_file_key(file);
-	req->pos	= pos;
-	req->len	= len;
-	req->nr_pages	= 1;
-	req->iter	= &req->def_iter;
+	req->vnode		= vnode;
+	req->key		= afs_file_key(file);
+	req->cache.io_done	= afs_fill_hole;
+	req->cache.pos		= pos;
+	req->cache.len		= len;
+	req->cache.nr_pages	= 1;
+	req->iter		= &req->def_iter;
 	iov_iter_mapping(&req->def_iter, READ, vnode->vfs_inode.i_mapping,
 			 pos, len);
 
