@@ -13,16 +13,6 @@
 #include "internal.h"
 
 /*
- * Determine the size of a data extent in a cache object.  This must be written
- * as a whole unit, but can be read piecemeal.
- */
-void cachefiles_shape_request(struct fscache_object *object,
-			      struct fscache_request_shape *shape)
-{
-	return 0;
-}
-
-/*
  * Initiate a read from the cache.
  */
 int cachefiles_read(struct fscache_object *object,
