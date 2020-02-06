@@ -178,6 +178,9 @@ extern atomic_t fscache_n_invalidates;
 extern atomic_t fscache_n_updates;
 extern atomic_t fscache_n_updates_run;
 
+extern atomic_t fscache_n_resizes;
+extern atomic_t fscache_n_resizes_null;
+
 extern atomic_t fscache_n_relinquishes;
 extern atomic_t fscache_n_relinquishes_retire;
 
