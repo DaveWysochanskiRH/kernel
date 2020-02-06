@@ -815,14 +815,19 @@ void afs_evict_inode(struct inode *inode)
 
 static void afs_setattr_success(struct afs_operation *op)
 {
-	struct inode *inode = &op->file[0].vnode->vfs_inode;
+	struct afs_vnode_param *vp = &op->file[0];
+	struct inode *inode = &vp->vnode->vfs_inode;
 
-	afs_vnode_commit_status(op, &op->file[0]);
+	afs_vnode_commit_status(op, vp);
 	if (op->setattr.attr->ia_valid & ATTR_SIZE) {
 		loff_t i_size = inode->i_size, size = op->setattr.attr->ia_size;
+
 		if (size > i_size)
 			pagecache_isize_extended(inode, i_size, size);
 		truncate_pagecache(inode, size);
+
+		fscache_resize_cookie(afs_vnode_cache(vp->vnode),
+				      vp->scb.status.size);
 	}
 }
 
@@ -864,6 +869,8 @@ int afs_setattr(struct dentry *dentry, struct iattr *attr)
 			attr->ia_valid &= ~ATTR_SIZE;
 	}
 
+	fscache_use_cookie(afs_vnode_cache(vnode), true);
+
 	/* flush any dirty data outstanding on a regular file */
 	if (S_ISREG(vnode->vfs_inode.i_mode))
 		filemap_write_and_wait(vnode->vfs_inode.i_mapping);
@@ -871,8 +878,10 @@ int afs_setattr(struct dentry *dentry, struct iattr *attr)
 	op = afs_alloc_operation(((attr->ia_valid & ATTR_FILE) ?
 				  afs_file_key(attr->ia_file) : NULL),
 				 vnode->volume);
-	if (IS_ERR(op))
-		return PTR_ERR(op);
+	if (IS_ERR(op)) {
+		ret = PTR_ERR(op);
+		goto error_unuse;
+	}
 
 	afs_op_set_vnode(op, 0, vnode);
 	op->setattr.attr = attr;
@@ -885,5 +894,10 @@ int afs_setattr(struct dentry *dentry, struct iattr *attr)
 	op->file[0].update_ctime = 1;
 
 	op->ops = &afs_setattr_operation;
-	return afs_do_sync_operation(op);
+	ret = afs_do_sync_operation(op);
+
+error_unuse:
+	fscache_unuse_cookie(afs_vnode_cache(vnode), NULL, NULL);
+	_leave(" = %d", ret);
+	return ret;
 }
