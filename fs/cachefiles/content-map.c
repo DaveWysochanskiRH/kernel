@@ -56,6 +56,163 @@ static bool cachefiles_granule_is_present(struct cachefiles_object *object,
 }
 
 /*
+ * Shape the extent of a single-chunk data object.
+ */
+static void cachefiles_shape_single(struct fscache_object *obj,
+				    struct fscache_request_shape *shape)
+{
+	struct cachefiles_object *object =
+		container_of(obj, struct cachefiles_object, fscache);
+	pgoff_t eof;
+
+	_enter("{%lx,%x,%x},%llx,%d",
+	       shape->proposed_start, shape->proposed_nr_pages,
+	       shape->max_io_pages, shape->i_size, shape->for_write);
+
+	shape->dio_block_size = CACHEFILES_DIO_BLOCK_SIZE;
+
+	if (shape->i_size > CACHEFILES_SIZE_LIMIT) {
+		shape->to_be_done = FSCACHE_READ_FROM_SERVER;
+		return;
+	}
+
+	if (object->content_info == CACHEFILES_CONTENT_SINGLE) {
+		shape->to_be_done = FSCACHE_READ_FROM_CACHE;
+	} else {
+		eof = (shape->i_size + PAGE_SIZE - 1) >> PAGE_SHIFT;
+
+		shape->actual_start = 0;
+		shape->actual_nr_pages = eof;
+		shape->granularity = 0;
+		shape->to_be_done = FSCACHE_WRITE_TO_CACHE;
+	}
+}
+
+/*
+ * Determine the size of a data extent in a cache object.
+ *
+ * In cachefiles, a data cache object is divided into granules of 256KiB, each
+ * of which must be written as a whole unit when the cache is being loaded.
+ * Data may be read out piecemeal.
+ *
+ * The extent is resized, but the result will always contain the starting page
+ * from the extent.
+ *
+ * If the granule does not exist in the cachefile, the start may be brought
+ * forward to align with the beginning of a granule boundary, and the end may be
+ * moved either way to align also.  The extent will be cut off it it would cross
+ * over the boundary between what's cached and what's not.
+ *
+ * If the starting granule does exist in the cachefile, the extent will be
+ * shortened, if necessary, so that it doesn't cross over into a region that is
+ * not present.
+ *
+ * If the granule does not exist and we cannot cache it for lack of space, the
+ * requested extent is left unaltered.
+ */
+void cachefiles_shape_request(struct fscache_object *obj,
+			      struct fscache_request_shape *shape)
+{
+	struct cachefiles_object *object =
+		container_of(obj, struct cachefiles_object, fscache);
+	unsigned int max_pages;
+	pgoff_t start, end, eof, bend;
+	size_t granule;
+	loff_t i_size;
+
+	if (object->fscache.cookie->advice & FSCACHE_ADV_SINGLE_CHUNK) {
+		cachefiles_shape_single(obj, shape);
+		goto out;
+	}
+
+	start	= shape->proposed_start;
+	end	= shape->proposed_start + shape->proposed_nr_pages;
+	max_pages = shape->max_io_pages;
+	i_size	= shape->i_size;
+
+	_enter("{%lx,%lx,%x},%llx,%d",
+	       start, end, max_pages, i_size, shape->for_write);
+
+	if (start >= CACHEFILES_SIZE_LIMIT / PAGE_SIZE) {
+		shape->to_be_done = FSCACHE_READ_FROM_SERVER;
+		return;
+	}
+	if (end > CACHEFILES_SIZE_LIMIT / PAGE_SIZE)
+		end = CACHEFILES_SIZE_LIMIT / PAGE_SIZE;
+
+	if (shape->i_size > CACHEFILES_SIZE_LIMIT)
+		i_size = CACHEFILES_SIZE_LIMIT;
+
+	max_pages = round_down(max_pages, CACHEFILES_GRAN_PAGES);
+	if (end - start > max_pages)
+		end = start + max_pages;
+
+	/* If the content map didn't get expanded for some reason - simply
+	 * ignore this granule.
+	 */
+	granule = start / CACHEFILES_GRAN_PAGES;
+	if (granule / 8 >= object->content_map_size)
+		return;
+
+	if (cachefiles_granule_is_present(object, granule)) {
+		/* The start of the requested extent is present in the cache -
+		 * restrict the returned extent to the maximum length of what's
+		 * available.
+		 */
+		bend = round_up(start + 1, CACHEFILES_GRAN_PAGES);
+		while (bend < end) {
+			pgoff_t i = round_up(bend + 1, CACHEFILES_GRAN_PAGES);
+			granule = i / CACHEFILES_GRAN_PAGES;
+			if (!cachefiles_granule_is_present(object, granule))
+				break;
+			bend = i;
+		}
+
+		if (end > bend)
+			end = bend;
+		shape->to_be_done = FSCACHE_READ_FROM_CACHE;
+	} else {
+		/* Otherwise expand the extent in both directions to cover what
+		 * we want for caching purposes.
+		 */
+		start = round_down(start, CACHEFILES_GRAN_PAGES);
+		end   = round_up(end, CACHEFILES_GRAN_PAGES);
+
+		/* But trim to the end of the file and the starting page */
+		eof = (i_size + PAGE_SIZE - 1) >> PAGE_SHIFT;
+		if (eof <= shape->proposed_start)
+			eof = shape->proposed_start + 1;
+		if (end > eof)
+			end = eof;
+
+		if ((start << PAGE_SHIFT) >= object->fscache.cookie->zero_point) {
+			/* The start of the requested extent is beyond the
+			 * original EOF of the file on the server - therefore
+			 * it's not going to be found on the server.
+			 */
+			end = round_up(start + 1, CACHEFILES_GRAN_PAGES);
+			shape->to_be_done = FSCACHE_FILL_WITH_ZERO;
+		} else {
+			end = start + CACHEFILES_GRAN_PAGES;
+			if (end > eof)
+				end = eof;
+			shape->to_be_done = FSCACHE_WRITE_TO_CACHE;
+		}
+
+		/* TODO: Check we have space in the cache */
+	}
+
+	shape->actual_start	= start;
+	shape->actual_nr_pages	= end - start;
+	shape->granularity	= CACHEFILES_GRAN_PAGES;
+	shape->dio_block_size	= CACHEFILES_DIO_BLOCK_SIZE;
+
+out:
+	_leave(" [%x,%lx,%x]",
+	       shape->to_be_done, shape->actual_start, shape->actual_nr_pages);
+}
+
+/*
  * Mark the content map to indicate stored granule.
  */
 void cachefiles_mark_content_map(struct fscache_io_request *req)

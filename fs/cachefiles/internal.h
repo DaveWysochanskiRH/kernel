@@ -125,6 +125,8 @@ extern void cachefiles_daemon_unbind(struct cachefiles_cache *cache);
 /*
  * content-map.c
  */
+extern void cachefiles_shape_request(struct fscache_object *object,
+				     struct fscache_request_shape *shape);
 extern void cachefiles_mark_content_map(struct fscache_io_request *req);
 extern void cachefiles_expand_content_map(struct cachefiles_object *object, loff_t size);
 extern void cachefiles_shorten_content_map(struct cachefiles_object *object, loff_t new_size);
@@ -149,8 +151,6 @@ extern struct fscache_object *cachefiles_grab_object(struct fscache_object *_obj
 /*
  * io.c
  */
-extern void cachefiles_shape_request(struct fscache_object *object,
-				     struct fscache_request_shape *shape);
 extern int cachefiles_read(struct fscache_object *object,
 			   struct fscache_io_request *req,
 			   struct iov_iter *iter);
