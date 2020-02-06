@@ -210,6 +210,7 @@ struct afs_read {
 	struct afs_vnode	*vnode;		/* The file being read into. */
 	afs_dataversion_t	data_version;	/* Version number returned by server */
 	refcount_t		usage;
+	unsigned int		debug_id;
 	unsigned int		call_debug_id;
 	void (*cleanup)(struct afs_read *req);
 };
@@ -961,6 +962,7 @@ extern void afs_dynroot_depopulate(struct super_block *);
 /*
  * file.c
  */
+extern const struct fscache_io_request_ops afs_req_ops;
 extern const struct address_space_operations afs_fs_aops;
 extern const struct inode_operations afs_file_inode_operations;
 extern const struct file_operations afs_file_operations;
@@ -970,7 +972,14 @@ extern void afs_put_wb_key(struct afs_wb_key *);
 extern int afs_open(struct inode *, struct file *);
 extern int afs_release(struct inode *, struct file *);
 extern int afs_fetch_data(struct afs_vnode *, struct afs_read *);
+extern struct afs_read *afs_alloc_read(gfp_t);
 extern void afs_put_read(struct afs_read *);
+extern void afs_req_issue_op(struct fscache_io_request *);
+extern void afs_req_done(struct fscache_io_request *);
+extern void afs_req_get(struct fscache_io_request *);
+extern void afs_req_put(struct fscache_io_request *);
+extern struct page *afs_prefetch_for_write(struct file *, struct address_space *,
+					   pgoff_t, unsigned int);
 
 static inline struct afs_read *afs_get_read(struct afs_read *req)
 {
