@@ -492,4 +492,5 @@ const struct fscache_cache_ops cachefiles_cache_ops = {
 	.shape_request		= cachefiles_shape_request,
 	.read			= cachefiles_read,
 	.write			= cachefiles_write,
+	.display_object		= cachefiles_display_object,
 };
