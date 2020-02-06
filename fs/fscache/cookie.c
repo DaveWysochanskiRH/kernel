@@ -557,7 +557,7 @@ void __fscache_invalidate(struct fscache_cookie *cookie)
 		cookie->stage = FSCACHE_COOKIE_STAGE_INVALIDATING;
 		wake_up_var(&cookie->stage);
 
-		atomic_inc(&cookie->n_ops);
+		fscache_count_io_operation(cookie);
 		object->cache->ops->grab_object(object, fscache_obj_get_inval);
 		spin_unlock(&cookie->lock);
 
