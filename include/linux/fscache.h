@@ -57,6 +57,8 @@ enum fscache_cookie_type {
 #define FSCACHE_ADV_WRITE_CACHE		0x00 /* Do cache if written to locally */
 #define FSCACHE_ADV_WRITE_NOCACHE	0x02 /* Don't cache if written to locally */
 
+#define FSCACHE_INVAL_LIGHT		0x01 /* Don't re-invalidate if temp object */
+
 /*
  * fscache cached network filesystem type
  * - name, version and ops must be filled in before registration
@@ -105,7 +107,6 @@ struct fscache_cookie {
 	loff_t				zero_point;	/* Size after which no data on server */
 
 	unsigned long			flags;
-#define FSCACHE_COOKIE_INVALIDATING	4	/* T if cookie is being invalidated */
 #define FSCACHE_COOKIE_ACQUIRED		5	/* T if cookie is in use */
 #define FSCACHE_COOKIE_RELINQUISHED	6	/* T if cookie has been relinquished */
 
@@ -178,6 +179,7 @@ struct fscache_io_request {
 	loff_t			len;		/* Size of the I/O */
 	loff_t			transferred;	/* Amount of data transferred */
 	short			error;		/* 0 or error that occurred */
+	unsigned int		inval_counter;	/* object->inval_counter at begin_op */
 	unsigned long		flags;
 #define FSCACHE_IO_DATA_FROM_SERVER	0	/* Set if data was read from server */
 #define FSCACHE_IO_DATA_FROM_CACHE	1	/* Set if data was read from the cache */
@@ -230,7 +232,7 @@ extern void __fscache_unuse_cookie(struct fscache_cookie *, const void *, const 
 extern void __fscache_relinquish_cookie(struct fscache_cookie *, bool);
 extern void __fscache_update_cookie(struct fscache_cookie *, const void *, const loff_t *);
 extern void __fscache_shape_request(struct fscache_cookie *, struct fscache_request_shape *);
-extern void __fscache_invalidate(struct fscache_cookie *, loff_t);
+extern void __fscache_invalidate(struct fscache_cookie *, const void *, loff_t, unsigned int);
 extern void __fscache_init_io_request(struct fscache_io_request *,
 				      struct fscache_cookie *);
 extern void __fscache_free_io_request(struct fscache_io_request *);
@@ -461,22 +463,23 @@ void fscache_unpin_cookie(struct fscache_cookie *cookie)
 /**
  * fscache_invalidate - Notify cache that an object needs invalidation
  * @cookie: The cookie representing the cache object
+ * @aux_data: The updated auxiliary data for the cookie (may be NULL)
  * @size: The revised size of the object.
+ * @flags: Invalidation flags (FSCACHE_INVAL_*)
  *
  * Notify the cache that an object is needs to be invalidated and that it
  * should abort any retrievals or stores it is doing on the cache.  The object
  * is then marked non-caching until such time as the invalidation is complete.
  *
- * This can be called with spinlocks held.
- *
  * See Documentation/filesystems/caching/netfs-api.rst for a complete
  * description.
  */
 static inline
-void fscache_invalidate(struct fscache_cookie *cookie, loff_t size)
+void fscache_invalidate(struct fscache_cookie *cookie,
+			const void *aux_data, loff_t size, unsigned int flags)
 {
 	if (fscache_cookie_valid(cookie))
-		__fscache_invalidate(cookie, size);
+		__fscache_invalidate(cookie, aux_data, size, flags);
 }
 
 /**
