@@ -39,6 +39,7 @@ MODULE_PARM_DESC(fscache_debug,
 
 struct kobject *fscache_root;
 struct workqueue_struct *fscache_op_wq;
+EXPORT_SYMBOL(fscache_op_wq);
 
 /* these values serve as lower bounds, will be adjusted in fscache_init() */
 static unsigned fscache_object_max_active = 4;

@@ -20,3 +20,6 @@ fscache-$(CONFIG_FSCACHE_HISTOGRAM) += histogram.o
 fscache-$(CONFIG_FSCACHE_OBJECT_LIST) += object-list.o
 
 obj-$(CONFIG_FSCACHE) := fscache.o
+
+fscache_support-y := read_helper.o
+obj-$(CONFIG_FSCACHE_SUPPORT) += fscache_support.o

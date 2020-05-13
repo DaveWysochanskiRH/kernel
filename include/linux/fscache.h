@@ -181,12 +181,24 @@ struct fscache_io_request {
 	unsigned long		flags;
 #define FSCACHE_IO_DATA_FROM_SERVER	0	/* Set if data was read from server */
 #define FSCACHE_IO_DATA_FROM_CACHE	1	/* Set if data was read from the cache */
+#define FSCACHE_IO_DONT_UNLOCK_PAGES	2	/* Don't unlock the pages on completion */
+#define FSCACHE_IO_READ_IN_PROGRESS	3	/* Cleared and woken upon completion of the read */
+#define FSCACHE_IO_WRITE_TO_CACHE	4	/* Set if should write to cache */
 	void (*io_done)(struct fscache_io_request *);
+	struct work_struct	work;
+
+	/* Bits for readpages helper */
+	struct address_space	*mapping;	/* The mapping being accessed */
+	unsigned int		nr_pages;	/* Number of pages involved in the I/O */
+	unsigned int		dio_block_size;	/* Rounding for direct I/O in the cache */
+	struct page		*no_unlock_page; /* Don't unlock this page after read */
 };
 
 struct fscache_io_request_ops {
+	int (*is_req_valid)(struct fscache_io_request *);
 	bool (*is_still_valid)(struct fscache_io_request *);
 	void (*issue_op)(struct fscache_io_request *);
+	void (*reshape)(struct fscache_io_request *, struct fscache_request_shape *);
 	void (*done)(struct fscache_io_request *);
 	void (*get)(struct fscache_io_request *);
 	void (*put)(struct fscache_io_request *);
@@ -489,7 +501,7 @@ static inline void fscache_init_io_request(struct fscache_io_request *req,
 static inline
 void fscache_free_io_request(struct fscache_io_request *req)
 {
-	if (req->cookie)
+	if (fscache_cookie_valid(req->cookie))
 		__fscache_free_io_request(req);
 }
 
@@ -592,5 +604,17 @@ int fscache_write(struct fscache_io_request *req, struct iov_iter *iter)
 		req->io_done(req);
 	return -ENOBUFS;
 }
+
+extern int fscache_read_helper_page_list(struct fscache_io_request *,
+					 struct list_head *,
+					 pgoff_t);
+extern int fscache_read_helper_locked_page(struct fscache_io_request *,
+					   struct page *,
+					   pgoff_t);
+extern int fscache_read_helper_for_write(struct fscache_io_request *,
+					 struct page **,
+					 pgoff_t,
+					 pgoff_t,
+					 unsigned int);
 
 #endif /* _LINUX_FSCACHE_H */
