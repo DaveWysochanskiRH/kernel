@@ -30,6 +30,8 @@
 #include <linux/sched.h>
 #include <linux/seq_file.h>
 
+#if IS_ENABLED(CONFIG_FSCACHE)
+
 #define FSCACHE_MIN_THREADS	4
 #define FSCACHE_MAX_THREADS	32
 
@@ -266,6 +268,12 @@ void fscache_update_aux(struct fscache_cookie *cookie,
 	if (object_size)
 		cookie->object_size = *object_size;
 }
+
+#else /* CONFIG_FSCACHE */
+
+#define fscache_op_wq system_wq
+
+#endif /* CONFIG_FSCACHE */
 
 /*****************************************************************************/
 /*
