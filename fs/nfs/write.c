@@ -290,6 +290,7 @@ static void nfs_grow_file(struct page *page, unsigned int offset, unsigned int c
 		goto out;
 	i_size_write(inode, end);
 	NFS_I(inode)->cache_validity &= ~NFS_INO_INVALID_SIZE;
+	nfs_fscache_invalidate(inode);
 	nfs_inc_stats(inode, NFSIOS_EXTENDWRITE);
 out:
 	spin_unlock(&inode->i_lock);
@@ -2112,7 +2113,7 @@ int nfs_migrate_page(struct address_space *mapping, struct page *newpage,
 	if (PagePrivate(page))
 		return -EBUSY;
 
-	if (!nfs_fscache_release_page(page, GFP_KERNEL))
+	if (PageFsCache(page))
 		return -EBUSY;
 
 	return migrate_page(mapping, newpage, page, mode);
