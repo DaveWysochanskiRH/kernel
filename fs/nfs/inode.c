@@ -213,7 +213,7 @@ static void nfs_set_cache_invalid(struct inode *inode, unsigned long flags)
 		flags &= ~(NFS_INO_INVALID_DATA|NFS_INO_DATA_INVAL_DEFER);
 	nfsi->cache_validity |= flags;
 	if (flags & NFS_INO_INVALID_DATA)
-		nfs_fscache_invalidate(inode);
+		nfs_fscache_invalidate(inode, 0);
 }
 
 /*
@@ -1240,6 +1240,7 @@ static int nfs_invalidate_mapping(struct inode *inode, struct address_space *map
 	struct nfs_inode *nfsi = NFS_I(inode);
 	int ret;
 
+	nfs_fscache_invalidate(inode, 0);
 	if (mapping->nrpages != 0) {
 		if (S_ISREG(inode->i_mode)) {
 			ret = nfs_sync_mapping(mapping);
@@ -1256,7 +1257,6 @@ static int nfs_invalidate_mapping(struct inode *inode, struct address_space *map
 		spin_unlock(&inode->i_lock);
 	}
 	nfs_inc_stats(inode, NFSIOS_DATAINVALIDATE);
-	nfs_fscache_wait_on_invalidate(inode);
 
 	dfprintk(PAGECACHE, "NFS: (%s/%Lu) data cache invalidated\n",
 			inode->i_sb->s_id,
