@@ -277,6 +277,7 @@ static struct nfs_page *nfs_find_and_lock_page_request(struct page *page)
 static void nfs_grow_file(struct page *page, unsigned int offset, unsigned int count)
 {
 	struct inode *inode = page_file_mapping(page)->host;
+	struct nfs_inode *nfsi = NFS_I(inode);
 	loff_t end, i_size;
 	pgoff_t end_index;
 
@@ -289,10 +290,14 @@ static void nfs_grow_file(struct page *page, unsigned int offset, unsigned int c
 	if (i_size >= end)
 		goto out;
 	i_size_write(inode, end);
-	NFS_I(inode)->cache_validity &= ~NFS_INO_INVALID_SIZE;
+	nfsi->cache_validity &= ~NFS_INO_INVALID_SIZE;
+	if (nfsi->fscache)
+		nfs_fscache_invalidate(inode);
 	nfs_inc_stats(inode, NFSIOS_EXTENDWRITE);
 out:
 	spin_unlock(&inode->i_lock);
+	dprintk("NFS:       nfs_grow_file (0x%p/0x%p) i_size=%lld\n",
+		  nfsi, nfsi->fscache, end);
 }
 
 /* A writeback failed: mark the page as bad, and invalidate the page cache */
