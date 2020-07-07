@@ -97,8 +97,9 @@ extern int __nfs_readpage_from_fscache(struct nfs_open_context *,
 				       struct inode *, struct page *);
 extern int __nfs_readpages_from_fscache(struct nfs_open_context *,
 					struct inode *, struct address_space *,
-					struct list_head *, unsigned *);
-extern void __nfs_readpage_to_fscache(struct inode *, struct page *, int);
+					struct list_head *);
+extern void __nfs_read_completion_to_fscache(struct nfs_pgio_header *hdr,
+					     unsigned long bytes);
 
 /*
  * wait for a page to complete writing to the cache
@@ -139,25 +140,22 @@ static inline int nfs_readpage_from_fscache(struct nfs_open_context *ctx,
 static inline int nfs_readpages_from_fscache(struct nfs_open_context *ctx,
 					     struct inode *inode,
 					     struct address_space *mapping,
-					     struct list_head *pages,
-					     unsigned *nr_pages)
+					     struct list_head *pages)
 {
 	if (NFS_I(inode)->fscache)
-		return __nfs_readpages_from_fscache(ctx, inode, mapping, pages,
-						    nr_pages);
+		return __nfs_readpages_from_fscache(ctx, inode, mapping, pages);
 	return -ENOBUFS;
 }
 
 /*
- * Store a page newly fetched from the server in an inode data storage object
+ * Store pages newly fetched from the server in an inode data storage object
  * in the cache.
  */
-static inline void nfs_readpage_to_fscache(struct inode *inode,
-					   struct page *page,
-					   int sync)
+static inline void nfs_read_completion_to_fscache(struct nfs_pgio_header *hdr,
+						  unsigned long bytes)
 {
-	if (PageFsCache(page))
-		__nfs_readpage_to_fscache(inode, page, sync);
+	if (NFS_I(hdr->inode)->fscache)
+		__nfs_read_completion_to_fscache(hdr, bytes);
 }
 
 /*
@@ -218,8 +216,7 @@ static inline int nfs_readpage_from_fscache(struct nfs_open_context *ctx,
 static inline int nfs_readpages_from_fscache(struct nfs_open_context *ctx,
 					     struct inode *inode,
 					     struct address_space *mapping,
-					     struct list_head *pages,
-					     unsigned *nr_pages)
+					     struct list_head *pages)
 {
 	return -ENOBUFS;
 }

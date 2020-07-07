@@ -124,10 +124,13 @@ static void nfs_readpage_release(struct nfs_page *req, int error)
 		struct address_space *mapping = page_file_mapping(page);
 
 		if (PageUptodate(page))
-			nfs_readpage_to_fscache(inode, page, 0);
+			; /* FIXME: review fscache page error handling */
 		else if (!PageError(page) && !PagePrivate(page))
 			generic_error_remove_page(mapping, page);
-		unlock_page(page);
+		if (nfs_i_fscache(inode))
+			put_page(page); /* See nfs_issue_op() */
+		else
+			unlock_page(page);
 	}
 	nfs_release_request(req);
 }
@@ -186,6 +189,8 @@ static void nfs_read_completion(struct nfs_pgio_header *hdr)
 		nfs_list_remove_request(req);
 		nfs_readpage_release(req, error);
 	}
+	/* FIXME: Review error handling before writing to fscache */
+	nfs_read_completion_to_fscache(hdr, bytes);
 out:
 	hdr->release(hdr);
 }
@@ -374,7 +379,7 @@ int nfs_readpage(struct file *filp, struct page *page)
 	nfs_pageio_init_read(desc.pgio, inode, false,
 			     &nfs_async_read_completion_ops);
 
-	ret = nfs_pageio_add_page_read(desc.pgio, page);
+	ret = nfs_pageio_add_page_read(&desc, page);
 
 	if (!ret)
 		nfs_pageio_complete_read(desc.pgio, inode);
@@ -422,8 +427,7 @@ int nfs_readpages(struct file *filp, struct address_space *mapping,
 	/* attempt to read as many of the pages as possible from the cache
 	 * - this returns -ENOBUFS immediately if the cookie is negative
 	 */
-	ret = nfs_readpages_from_fscache(desc.ctx, inode, mapping,
-					 pages, &nr_pages);
+	ret = nfs_readpages_from_fscache(desc.ctx, inode, mapping, pages);
 	if (ret == 0)
 		goto read_complete; /* all pages were read */
 
