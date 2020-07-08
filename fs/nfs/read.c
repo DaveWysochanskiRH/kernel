@@ -74,8 +74,8 @@ void nfs_pageio_init_read(struct nfs_pageio_descriptor *pgio,
 }
 EXPORT_SYMBOL_GPL(nfs_pageio_init_read);
 
-static void nfs_pageio_complete_read(struct nfs_pageio_descriptor *pgio,
-				     struct inode *inode)
+void nfs_pageio_complete_read(struct nfs_pageio_descriptor *pgio,
+			      struct inode *inode)
 {
 	struct nfs_pgio_mirror *pgm;
 	unsigned long npages;
@@ -158,7 +158,7 @@ static void nfs_read_completion(struct nfs_pgio_header *hdr)
 
 		if (test_bit(NFS_IOHDR_EOF, &hdr->flags)) {
 			/* note: regions of the page not covered by a
-			 * request are zeroed in readpage_async_filler */
+			 * request are zeroed in nfs_pageio_add_page_read */
 			if (bytes > hdr->good_bytes) {
 				/* nothing in this request was good, so zero
 				 * the full extent of the request */
@@ -290,8 +290,7 @@ static void nfs_readpage_result(struct rpc_task *task,
 		nfs_readpage_retry(task, hdr);
 }
 
-static int
-readpage_async_filler(void *data, struct page *page)
+int nfs_pageio_add_page_read(void *data, struct page *page)
 {
 	struct nfs_readdesc *desc = (struct nfs_readdesc *)data;
 	struct nfs_page *new;
@@ -375,7 +374,7 @@ int nfs_readpage(struct file *filp, struct page *page)
 	nfs_pageio_init_read(desc.pgio, inode, false,
 			     &nfs_async_read_completion_ops);
 
-	ret = readpage_async_filler(desc.pgio, page);
+	ret = nfs_pageio_add_page_read(desc.pgio, page);
 
 	if (!ret)
 		nfs_pageio_complete_read(desc.pgio, inode);
@@ -432,7 +431,7 @@ int nfs_readpages(struct file *filp, struct address_space *mapping,
 	nfs_pageio_init_read(&pgio, inode, false,
 			     &nfs_async_read_completion_ops);
 
-	ret = read_cache_pages(mapping, pages, readpage_async_filler, &desc);
+	ret = read_cache_pages(mapping, pages, nfs_pageio_add_page_read, &desc);
 
 	nfs_pageio_complete_read(desc.pgio, inode);
 
