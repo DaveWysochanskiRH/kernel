@@ -414,7 +414,7 @@ static void nfs_invalidate_page(struct page *page, unsigned int offset,
 	/* Cancel any unstarted writes on this page */
 	nfs_wb_page_cancel(page_file_mapping(page)->host, page);
 	wait_on_page_fscache(page);
-	nfs_fscache_invalidate(page_file_mapping(page)->host);
+	nfs_fscache_invalidate(page_file_mapping(page)->host, 0);
 }
 
 /*
