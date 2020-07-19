@@ -1217,7 +1217,7 @@ nfs4_update_changeattr_locked(struct inode *inode,
 	nfsi->cache_validity &= ~NFS_INO_INVALID_CHANGE;
 
 	if (nfsi->cache_validity & NFS_INO_INVALID_DATA)
-		nfs_fscache_invalidate(inode);
+		nfs_fscache_invalidate(inode, 0);
 }
 
 void
