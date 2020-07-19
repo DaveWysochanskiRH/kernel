@@ -150,7 +150,7 @@ static inline void nfs_fscache_update_auxdata(struct nfs_fscache_inode_auxdata *
 /*
  * Invalidate the contents of fscache for this inode.  This will not sleep.
  */
-static inline void nfs_fscache_invalidate(struct inode *inode)
+static inline void nfs_fscache_invalidate(struct inode *inode, int flags)
 {
 	struct nfs_fscache_inode_auxdata auxdata;
 	struct nfs_inode *nfsi = NFS_I(inode);
@@ -158,7 +158,7 @@ static inline void nfs_fscache_invalidate(struct inode *inode)
 	if (nfsi->fscache) {
 		nfs_fscache_update_auxdata(&auxdata, nfsi);
 		fscache_invalidate(nfsi->fscache, &auxdata,
-				   i_size_read(&nfsi->vfs_inode), 0);
+				   i_size_read(&nfsi->vfs_inode), flags);
 	}
 }
 
@@ -202,7 +202,7 @@ static inline int nfs_readpages_from_fscache(struct nfs_open_context *ctx,
 static inline void nfs_read_completion_to_fscache(struct nfs_pgio_header *hdr,
 						  unsigned long bytes) {}
 
-static inline void nfs_fscache_invalidate(struct inode *inode) {}
+static inline void nfs_fscache_invalidate(struct inode *inode, int flags) {}
 
 static inline const char *nfs_server_fscache_state(struct nfs_server *server)
 {
