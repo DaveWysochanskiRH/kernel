@@ -667,6 +667,7 @@ static int nfs_vmtruncate(struct inode * inode, loff_t offset)
 	spin_unlock(&inode->i_lock);
 	truncate_pagecache(inode, offset);
 	spin_lock(&inode->i_lock);
+	fscache_resize_cookie(nfs_i_fscache(inode), i_size_read(inode));
 out:
 	return err;
 }
