@@ -1232,6 +1232,7 @@ static int nfs_invalidate_mapping(struct inode *inode, struct address_space *map
 	struct nfs_inode *nfsi = NFS_I(inode);
 	int ret;
 
+	nfs_fscache_invalidate(inode, 0);
 	if (mapping->nrpages != 0) {
 		if (S_ISREG(inode->i_mode)) {
 			ret = nfs_sync_mapping(mapping);
