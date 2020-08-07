@@ -127,9 +127,7 @@ static void nfs_readpage_release(struct nfs_page *req, int error)
 			; /* FIXME: review fscache page error handling */
 		else if (!PageError(page) && !PagePrivate(page))
 			generic_error_remove_page(mapping, page);
-		if (nfs_i_fscache(inode))
-			put_page(page); /* See nfs_issue_op() */
-		else
+		if (!nfs_i_fscache(inode))
 			unlock_page(page);
 	}
 	nfs_release_request(req);

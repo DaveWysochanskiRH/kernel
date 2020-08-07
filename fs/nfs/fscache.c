@@ -14,6 +14,7 @@
 #include <linux/in6.h>
 #include <linux/seq_file.h>
 #include <linux/slab.h>
+#include <linux/xarray.h>
 
 #include "internal.h"
 #include "iostat.h"
@@ -360,17 +361,17 @@ static void nfs_issue_op(struct fscache_io_request *fsreq)
 	struct nfs_fscache_req *req = container_of(fsreq, struct nfs_fscache_req, cache);
 	struct inode *inode = req->cache.mapping->host;
 	struct page *page;
-	pgoff_t index = req->cache.pos >> PAGE_SHIFT;
-	pgoff_t last = index + req->cache.nr_pages - 1;
+	pgoff_t start = req->cache.pos >> PAGE_SHIFT;
+	pgoff_t last = start + req->cache.nr_pages - 1;
 
+	XA_STATE(xas, &req->cache.mapping->i_pages, start);
 	nfs_add_fscache_stats(inode, NFSIOS_FSCACHE_PAGES_READ_FAIL,
 			      req->cache.nr_pages);
 	nfs_get_io_request(fsreq);
 	nfs_pageio_init_read(&req->desc.pgio, inode, false,
 			     &nfs_async_read_completion_ops);
 
-	for (; index <= last; index++) {
-		page = find_get_page(req->cache.mapping, index);
+	xas_for_each(&xas, page, last) {
 		BUG_ON(!page);
 		req->cache.error = readpage_async_filler(&req->desc, page);
 		if (req->cache.error < 0)
