@@ -458,6 +458,7 @@ int __nfs_readpages_from_fscache(struct nfs_open_context *ctx,
 {
 	struct nfs_fscache_req *req;
 	int ret;
+	pgoff_t max_pages = NFS_SB(inode->i_sb)->rsize >> PAGE_SHIFT;
 
 	dfprintk(FSCACHE, "NFS: nfs_readpages_from_fscache (0x%p/0x%p)\n",
 		 nfs_i_fscache(inode), inode);
@@ -468,7 +469,7 @@ int __nfs_readpages_from_fscache(struct nfs_open_context *ctx,
 			return PTR_ERR(req);
 
 		ret = fscache_read_helper_page_list(&req->cache, pages,
-						    ULONG_MAX);
+						    max_pages);
 		nfs_put_io_request(&req->cache);
 		if (ret < 0)
 			break;
