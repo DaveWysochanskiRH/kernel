@@ -134,7 +134,8 @@ void cachefiles_shape_request(struct fscache_object *obj,
 	_enter("{%lx,%lx,%x},%llx,%d",
 	       start, end, max_pages, i_size, shape->for_write);
 
-	if (start >= CACHEFILES_SIZE_LIMIT / PAGE_SIZE) {
+	if (start >= CACHEFILES_SIZE_LIMIT / PAGE_SIZE ||
+	    max_pages < CACHEFILES_GRAN_PAGES) {
 		shape->to_be_done = FSCACHE_READ_FROM_SERVER;
 		return;
 	}
@@ -143,10 +144,6 @@ void cachefiles_shape_request(struct fscache_object *obj,
 
 	if (shape->i_size > CACHEFILES_SIZE_LIMIT)
 		i_size = CACHEFILES_SIZE_LIMIT;
-
-	max_pages = round_down(max_pages, CACHEFILES_GRAN_PAGES);
-	if (end - start > max_pages)
-		end = start + max_pages;
 
 	granule = start / CACHEFILES_GRAN_PAGES;
 	if (granule / 8 >= object->content_map_size) {
@@ -184,6 +181,10 @@ void cachefiles_shape_request(struct fscache_object *obj,
 		 */
 		start = round_down(start, CACHEFILES_GRAN_PAGES);
 		end   = round_up(end, CACHEFILES_GRAN_PAGES);
+
+		/* Trim to the maximum size the netfs supports */
+		if (end - start > max_pages)
+			end = round_down(start + max_pages, CACHEFILES_GRAN_PAGES);
 
 		/* But trim to the end of the file and the starting page */
 		eof = (i_size + PAGE_SIZE - 1) >> PAGE_SHIFT;
