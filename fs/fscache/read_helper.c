@@ -318,8 +318,8 @@ static int fscache_read_helper(struct fscache_io_request *req,
 	switch (type) {
 	case FSCACHE_READ_PAGE_LIST:
 		shape.proposed_start = lru_to_page(pages)->index;
-		shape.proposed_nr_pages =
-			lru_to_last_page(pages)->index - shape.proposed_start + 1;
+		shape.proposed_nr_pages = min_t(unsigned int, max_pages,
+			lru_to_last_page(pages)->index - shape.proposed_start + 1);
 		break;
 
 	case FSCACHE_READ_LOCKED_PAGE:
