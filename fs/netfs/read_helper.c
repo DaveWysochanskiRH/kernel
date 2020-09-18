@@ -16,6 +16,8 @@
 #include <linux/netfs.h>
 #include <linux/fscache.h>
 #include "internal.h"
+#define CREATE_TRACE_POINTS
+#include <trace/events/netfs.h>
 
 MODULE_DESCRIPTION("Network fs support");
 MODULE_AUTHOR("Red Hat, Inc.");
@@ -37,6 +39,7 @@ static void netfs_put_subrequest(struct netfs_read_subrequest *subreq)
 static struct netfs_read_request *netfs_alloc_read_request(
 	const struct netfs_read_request_ops *ops, struct file *file)
 {
+	static atomic_t debug_ids;
 	struct netfs_read_request *rreq;
 
 	rreq = kzalloc(sizeof(struct netfs_read_request), GFP_KERNEL);
@@ -44,6 +47,7 @@ static struct netfs_read_request *netfs_alloc_read_request(
 		rreq->netfs_ops	= ops;
 		rreq->file	= get_file(file);
 		rreq->i_size	= i_size_read(file_inode(file));
+		rreq->debug_id	= atomic_inc_return(&debug_ids);
 		INIT_LIST_HEAD(&rreq->subrequests);
 		INIT_WORK(&rreq->work, netfs_rreq_work);
 		refcount_set(&rreq->usage, 1);
@@ -79,6 +83,7 @@ static void netfs_put_read_request(struct netfs_read_request *rreq)
 			rreq->netfs_ops->cleanup(rreq->mapping, rreq->netfs_priv);
 		fput(rreq->file);
 		fscache_end_operation(&rreq->cache_resources);
+		trace_netfs_rreq(rreq, netfs_rreq_trace_free);
 		kfree(rreq);
 	}
 }
@@ -108,6 +113,7 @@ static void netfs_get_read_subrequest(struct netfs_read_subrequest *subreq)
 
 static void __netfs_put_subrequest(struct netfs_read_subrequest *subreq)
 {
+	trace_netfs_sreq(subreq, netfs_sreq_trace_free);
 	netfs_put_read_request(subreq->rreq);
 	kfree(subreq);
 }
@@ -187,6 +193,7 @@ static void netfs_read_from_server(struct netfs_read_request *rreq,
  */
 static void netfs_rreq_completed(struct netfs_read_request *rreq)
 {
+	trace_netfs_rreq(rreq, netfs_rreq_trace_done);
 	netfs_rreq_clear_subreqs(rreq);
 	netfs_put_read_request(rreq);
 }
@@ -203,6 +210,8 @@ static void netfs_rreq_unmark_after_write(struct netfs_read_request *rreq)
 	struct page *page;
 	pgoff_t unlocked = 0;
 	bool have_unlocked = false;
+
+	trace_netfs_rreq(rreq, netfs_rreq_trace_unmark);
 
 	rcu_read_lock();
 
@@ -235,6 +244,8 @@ static void netfs_rreq_copy_terminated(void *priv, ssize_t transferred_or_error)
 	else
 		subreq->error = 0;
 
+	trace_netfs_sreq(subreq, netfs_sreq_trace_write_term);
+
 	/* If we decrement nr_wr_ops to 0, the ref belongs to us. */
 	if (atomic_dec_and_test(&rreq->nr_wr_ops))
 		netfs_rreq_unmark_after_write(rreq);
@@ -250,6 +261,8 @@ static void netfs_rreq_do_write_to_cache(struct netfs_read_request *rreq)
 {
 	struct netfs_read_subrequest *subreq, *next, *p;
 	struct iov_iter iter;
+
+	trace_netfs_rreq(rreq, netfs_rreq_trace_write);
 
 	/* We don't want terminating writes trying to wake us up whilst we're
 	 * still going through the list.
@@ -273,6 +286,8 @@ static void netfs_rreq_do_write_to_cache(struct netfs_read_request *rreq)
 			list_del_init(&next->rreq_link);
 			netfs_put_subrequest(next);
 		}
+
+		trace_netfs_sreq(subreq, netfs_sreq_trace_write);
 
 		iov_iter_xarray(&iter, WRITE, &rreq->mapping->i_pages,
 				subreq->start, subreq->len);
@@ -341,6 +356,8 @@ static void netfs_rreq_unlock(struct netfs_read_request *rreq)
 	iopos = 0;
 	subreq_failed = (subreq->error < 0);
 
+	trace_netfs_rreq(rreq, netfs_rreq_trace_unlock);
+
 	rcu_read_lock();
 	xas_for_each(&xas, page, last_page) {
 		unsigned int pgpos = (page->index - start_page) * PAGE_SIZE;
@@ -397,6 +414,8 @@ static void netfs_rreq_short_read(struct netfs_read_request *rreq,
 	__clear_bit(NETFS_SREQ_SHORT_READ, &subreq->flags);
 	__set_bit(NETFS_SREQ_SEEK_DATA_READ, &subreq->flags);
 
+	trace_netfs_sreq(subreq, netfs_sreq_trace_resubmit_short);
+
 	netfs_get_read_subrequest(subreq);
 	atomic_inc(&rreq->nr_rd_ops);
 	if (subreq->source == NETFS_READ_FROM_CACHE)
@@ -415,6 +434,8 @@ static bool netfs_rreq_perform_resubmissions(struct netfs_read_request *rreq)
 
 	WARN_ON(in_softirq());
 
+	trace_netfs_rreq(rreq, netfs_rreq_trace_resubmit);
+
 	/* We don't want terminating submissions trying to wake us up whilst
 	 * we're still going through the list.
 	 */
@@ -427,6 +448,7 @@ static bool netfs_rreq_perform_resubmissions(struct netfs_read_request *rreq)
 				break;
 			subreq->source = NETFS_DOWNLOAD_FROM_SERVER;
 			subreq->error = 0;
+			trace_netfs_sreq(subreq, netfs_sreq_trace_download_instead);
 			netfs_get_read_subrequest(subreq);
 			atomic_inc(&rreq->nr_rd_ops);
 			netfs_read_from_server(rreq, subreq);
@@ -470,6 +492,8 @@ static void netfs_rreq_is_still_valid(struct netfs_read_request *rreq)
  */
 static void netfs_rreq_assess(struct netfs_read_request *rreq)
 {
+	trace_netfs_rreq(rreq, netfs_rreq_trace_assess);
+
 again:
 	netfs_rreq_is_still_valid(rreq);
 
@@ -557,6 +581,8 @@ complete:
 		set_bit(NETFS_RREQ_WRITE_TO_CACHE, &rreq->flags);
 
 out:
+	trace_netfs_sreq(subreq, netfs_sreq_trace_terminated);
+
 	/* If we decrement nr_rd_ops to 0, the ref belongs to us. */
 	u = atomic_dec_return(&rreq->nr_rd_ops);
 	if (u == 0)
@@ -649,6 +675,7 @@ netfs_rreq_prepare_read(struct netfs_read_request *rreq,
 
 out:
 	subreq->source = source;
+	trace_netfs_sreq(subreq, netfs_sreq_trace_prepare);
 	return source;
 }
 
@@ -689,6 +716,7 @@ static bool netfs_rreq_submit_slice(struct netfs_read_request *rreq,
 
 	rreq->submitted += subreq->len;
 
+	trace_netfs_sreq(subreq, netfs_sreq_trace_submit);
 	switch (source) {
 	case NETFS_FILL_WITH_ZEROES:
 		netfs_fill_with_zeroes(rreq, subreq);
@@ -749,6 +777,9 @@ static void netfs_rreq_expand(struct netfs_read_request *rreq,
 		readahead_expand(ractl, rreq->start, rreq->len);
 		rreq->start  = readahead_pos(ractl);
 		rreq->len = readahead_length(ractl);
+
+		trace_netfs_read(rreq, readahead_pos(ractl), readahead_length(ractl),
+				 netfs_read_trace_expanded);
 	}
 }
 
@@ -790,6 +821,9 @@ void netfs_readahead(struct readahead_control *ractl,
 	rreq->start	= readahead_pos(ractl);
 	rreq->len	= readahead_length(ractl);
 	rreq->netfs_priv = netfs_priv;
+
+	trace_netfs_read(rreq, readahead_pos(ractl), readahead_length(ractl),
+			 netfs_read_trace_readahead);
 
 	if (ops->begin_cache_operation)
 		ops->begin_cache_operation(rreq);
@@ -863,6 +897,9 @@ int netfs_readpage(struct file *file,
 	rreq->start		= page->index * PAGE_SIZE;
 	rreq->len		= thp_size(page);
 	rreq->netfs_priv	= netfs_priv;
+
+	trace_netfs_read(rreq, page->index * PAGE_SIZE, thp_size(page),
+			 netfs_read_trace_readpage);
 
 	if (ops->begin_cache_operation)
 		ops->begin_cache_operation(rreq);
