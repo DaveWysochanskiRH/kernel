@@ -123,11 +123,10 @@ static void nfs_readpage_release(struct nfs_page *req, int error)
 	if (nfs_page_group_sync_on_bit(req, PG_UNLOCKPAGE)) {
 		struct address_space *mapping = page_file_mapping(page);
 
-		if (PageUptodate(page))
-			; /* FIXME: review fscache page error handling */
-		else if (!PageError(page) && !PagePrivate(page))
+		if (!PageUptodate(page) && !PageError(page) && !PagePrivate(page))
 			generic_error_remove_page(mapping, page);
-		if (!nfs_i_fscache(inode))
+		if (!nfs_i_fscache(inode) ||
+		    (nfs_i_fscache(inode) && error && !nfs_error_is_fatal_on_server(error)))
 			unlock_page(page);
 	}
 	nfs_release_request(req);
@@ -182,8 +181,9 @@ static void nfs_read_completion(struct nfs_pgio_header *hdr)
 		nfs_list_remove_request(req);
 		nfs_readpage_release(req, error);
 	}
-	/* FIXME: NFS_IOHDR_ERROR and NFS_IOHDR_EOF handled per-page */
-	nfs_read_completion_to_fscache(hdr, bytes);
+	/* Only call back into fscache if the read was not retried */
+	if (!hdr->error || nfs_error_is_fatal_on_server(hdr->error))
+		nfs_read_completion_to_fscache(hdr, bytes);
 out:
 	hdr->release(hdr);
 }
