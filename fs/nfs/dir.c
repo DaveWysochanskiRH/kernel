@@ -1141,7 +1141,11 @@ static void nfs_readdir_handle_cache_misses(struct inode *inode,
 	    cache_misses <= NFS_READDIR_CACHE_MISS_THRESHOLD ||
 	    !nfs_readdir_may_fill_pagecache(desc))
 		return;
-	invalidate_mapping_pages(inode->i_mapping, page_index + 1, -1);
+	if (invalidate_mapping_pages(inode->i_mapping, page_index + 1, -1) == 0)
+		return;
+	trace_nfs_readdir_invalidate_cache_range(
+		inode, (loff_t)(page_index + 1) << PAGE_SHIFT,
+		MAX_LFS_FILESIZE);
 }
 
 /* The file offset position represents the dirent entry number.  A
