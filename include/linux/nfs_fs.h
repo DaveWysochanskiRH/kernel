@@ -31,6 +31,10 @@
 #include <linux/sunrpc/auth.h>
 #include <linux/sunrpc/clnt.h>
 
+#ifdef CONFIG_NFS_FSCACHE
+#include <linux/netfs.h>
+#endif
+
 #include <linux/nfs.h>
 #include <linux/nfs2.h>
 #include <linux/nfs3.h>
@@ -121,6 +125,10 @@ struct nfs4_xattr_cache;
  * nfs fs inode data in memory
  */
 struct nfs_inode {
+#ifdef CONFIG_NFS_FSCACHE
+	struct netfs_inode netfs; /* Netfslib context and inode */
+#endif
+
 	/*
 	 * The 64bit 'inode number'
 	 */
@@ -203,10 +211,10 @@ struct nfs_inode {
 	/* how many bytes have been written/read and how many bytes queued up */
 	__u64 write_io;
 	__u64 read_io;
-#ifdef CONFIG_NFS_FSCACHE
-	struct fscache_cookie	*fscache;
+#ifndef CONFIG_NFS_FSCACHE
+	/* fscache uses netfs, and netfs_inode contains the inode */
+	struct inode	vfs_inode;
 #endif
-	struct inode		vfs_inode;
 
 #ifdef CONFIG_NFS_V4_2
 	struct nfs4_xattr_cache *xattr_cache;
@@ -281,9 +289,22 @@ struct nfs4_copy_state {
 #define NFS_INO_LAYOUTSTATS	(11)		/* layoutstats inflight */
 #define NFS_INO_ODIRECT		(12)		/* I/O setting is O_DIRECT */
 
+static inline struct inode *NFSI_TO_INODE(struct nfs_inode *nfsi)
+{
+#ifdef CONFIG_NFS_FSCACHE
+	return &nfsi->netfs.inode;
+#else
+	return &nfsi->vfs_inode;
+#endif
+}
+
 static inline struct nfs_inode *NFS_I(const struct inode *inode)
 {
+#ifdef CONFIG_NFS_FSCACHE
+	return container_of(inode, struct nfs_inode, netfs.inode);
+#else
 	return container_of(inode, struct nfs_inode, vfs_inode);
+#endif
 }
 
 static inline struct nfs_server *NFS_SB(const struct super_block *s)
@@ -326,15 +347,6 @@ static inline unsigned NFS_MAXATTRTIMEO(const struct inode *inode)
 static inline int NFS_STALE(const struct inode *inode)
 {
 	return test_bit(NFS_INO_STALE, &NFS_I(inode)->flags);
-}
-
-static inline struct fscache_cookie *nfs_i_fscache(struct inode *inode)
-{
-#ifdef CONFIG_NFS_FSCACHE
-	return NFS_I(inode)->fscache;
-#else
-	return NULL;
-#endif
 }
 
 static inline __u64 NFS_FILEID(const struct inode *inode)
