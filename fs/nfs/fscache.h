@@ -34,6 +34,44 @@ struct nfs_fscache_inode_auxdata {
 	u64	change_attr;
 };
 
+struct nfs_netfs_io_data {
+	refcount_t			refcount;
+	struct netfs_io_subrequest	*sreq;
+
+	/*
+	 * NFS may split a netfs_io_subrequest into multiple RPCs, each
+	 * with their own read completion.  In netfs, we can only call
+	 * netfs_subreq_terminated() once for each subrequest.  So we
+	 * must keep track of the rpcs and rpc_byte_count for what has
+	 * been submitted, and only call netfs via netfs_subreq_terminated()
+	 * when the final RPC has completed.
+	 */
+	atomic_t	rpcs;
+	unsigned long	rpc_byte_count;
+
+	/*
+	 * Final dispostion of the netfs_io_subrequest, sent in
+	 * netfs_subreq_terminated()
+	 */
+	spinlock_t	lock;
+	ssize_t		transferred;
+	int		error;
+};
+
+static inline void nfs_netfs_get(struct nfs_netfs_io_data *netfs)
+{
+	refcount_inc(&netfs->refcount);
+}
+
+static inline void nfs_netfs_put(struct nfs_netfs_io_data *netfs)
+{
+	if (refcount_dec_and_test(&netfs->refcount))
+		kfree(netfs);
+}
+extern void nfs_netfs_read_initiate(struct nfs_pgio_header *hdr);
+extern void nfs_netfs_read_done(struct nfs_pgio_header *hdr);
+extern void nfs_netfs_read_completion(struct nfs_pgio_header *hdr);
+
 /*
  * fscache.c
  */
@@ -45,41 +83,15 @@ extern void nfs_fscache_clear_inode(struct inode *);
 extern void nfs_fscache_open_file(struct inode *, struct file *);
 extern void nfs_fscache_release_file(struct inode *, struct file *);
 
-extern int __nfs_fscache_read_page(struct inode *, struct page *);
-extern void __nfs_fscache_write_page(struct inode *, struct page *);
-
 static inline bool nfs_fscache_release_folio(struct folio *folio, gfp_t gfp)
 {
 	if (folio_test_fscache(folio)) {
 		if (current_is_kswapd() || !(gfp & __GFP_FS))
 			return false;
 		folio_wait_fscache(folio);
-		fscache_note_page_release(netfs_i_cookie(&NFS_I(folio->mapping->host)->netfs));
-		nfs_inc_fscache_stats(folio->mapping->host,
-				      NFSIOS_FSCACHE_PAGES_UNCACHED);
 	}
+	fscache_note_page_release(netfs_i_cookie(&NFS_I(folio->mapping->host)->netfs));
 	return true;
-}
-
-/*
- * Retrieve a page from an inode data storage object.
- */
-static inline int nfs_fscache_read_page(struct inode *inode, struct page *page)
-{
-	if (netfs_inode(inode)->cache)
-		return __nfs_fscache_read_page(inode, page);
-	return -ENOBUFS;
-}
-
-/*
- * Store a page newly fetched from the server in an inode data storage object
- * in the cache.
- */
-static inline void nfs_fscache_write_page(struct inode *inode,
-					   struct page *page)
-{
-	if (netfs_inode(inode)->cache)
-		__nfs_fscache_write_page(inode, page);
 }
 
 static inline void nfs_fscache_update_auxdata(struct nfs_fscache_inode_auxdata *auxdata,
@@ -130,11 +142,6 @@ static inline bool nfs_fscache_release_folio(struct folio *folio, gfp_t gfp)
 {
 	return true; /* may release folio */
 }
-static inline int nfs_fscache_read_page(struct inode *inode, struct page *page)
-{
-	return -ENOBUFS;
-}
-static inline void nfs_fscache_write_page(struct inode *inode, struct page *page) {}
 static inline void nfs_fscache_invalidate(struct inode *inode, int flags) {}
 
 static inline const char *nfs_server_fscache_state(struct nfs_server *server)

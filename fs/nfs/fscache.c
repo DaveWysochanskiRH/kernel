@@ -15,6 +15,9 @@
 #include <linux/seq_file.h>
 #include <linux/slab.h>
 #include <linux/iversion.h>
+#include <linux/xarray.h>
+#include <linux/fscache.h>
+#include <linux/netfs.h>
 
 #include "internal.h"
 #include "iostat.h"
@@ -235,112 +238,157 @@ void nfs_fscache_release_file(struct inode *inode, struct file *filp)
 	fscache_unuse_cookie(cookie, &auxdata, &i_size);
 }
 
-/*
- * Fallback page reading interface.
- */
-static int fscache_fallback_read_page(struct inode *inode, struct page *page)
+
+atomic_t nfs_netfs_debug_id;
+static int nfs_netfs_init_request(struct netfs_io_request *rreq, struct file *file)
 {
-	struct netfs_cache_resources cres;
-	struct fscache_cookie *cookie = netfs_i_cookie(&NFS_I(inode)->netfs);
-	struct iov_iter iter;
-	struct bio_vec bvec[1];
-	int ret;
+	struct nfs_open_context *ctx;
 
-	memset(&cres, 0, sizeof(cres));
-	bvec[0].bv_page		= page;
-	bvec[0].bv_offset	= 0;
-	bvec[0].bv_len		= PAGE_SIZE;
-	iov_iter_bvec(&iter, READ, bvec, ARRAY_SIZE(bvec), PAGE_SIZE);
+	if (file == NULL) {
+		ctx = nfs_find_open_context(rreq->inode, NULL, FMODE_READ);
+		if (!ctx)
+			return -ENOMEM;
+	} else
+		ctx = get_nfs_open_context(nfs_file_open_context(file));
 
-	ret = fscache_begin_read_operation(&cres, cookie);
-	if (ret < 0)
-		return ret;
+	rreq->netfs_priv = ctx;
 
-	ret = fscache_read(&cres, page_offset(page), &iter, NETFS_READ_HOLE_FAIL,
-			   NULL, NULL);
-	fscache_end_operation(&cres);
-	return ret;
+	if (netfs_i_cookie(&NFS_I(rreq->inode)->netfs))
+		rreq->debug_id = atomic_inc_return(&nfs_netfs_debug_id);
+
+	return 0;
 }
 
-/*
- * Fallback page writing interface.
- */
-static int fscache_fallback_write_page(struct inode *inode, struct page *page,
-				       bool no_space_allocated_yet)
+static void nfs_netfs_free_request(struct netfs_io_request *rreq)
 {
-	struct netfs_cache_resources cres;
-	struct fscache_cookie *cookie = netfs_i_cookie(&NFS_I(inode)->netfs);
-	struct iov_iter iter;
-	struct bio_vec bvec[1];
-	loff_t start = page_offset(page);
-	size_t len = PAGE_SIZE;
-	int ret;
-
-	memset(&cres, 0, sizeof(cres));
-	bvec[0].bv_page		= page;
-	bvec[0].bv_offset	= 0;
-	bvec[0].bv_len		= PAGE_SIZE;
-	iov_iter_bvec(&iter, WRITE, bvec, ARRAY_SIZE(bvec), PAGE_SIZE);
-
-	ret = fscache_begin_write_operation(&cres, cookie);
-	if (ret < 0)
-		return ret;
-
-	ret = cres.ops->prepare_write(&cres, &start, &len, i_size_read(inode),
-				      no_space_allocated_yet);
-	if (ret == 0)
-		ret = fscache_write(&cres, page_offset(page), &iter, NULL, NULL);
-	fscache_end_operation(&cres);
-	return ret;
+	put_nfs_open_context(rreq->netfs_priv);
 }
 
-/*
- * Retrieve a page from fscache
- */
-int __nfs_fscache_read_page(struct inode *inode, struct page *page)
+static inline int nfs_netfs_begin_cache_operation(struct netfs_io_request *rreq)
 {
-	int ret;
+	return fscache_begin_read_operation(&rreq->cache_resources,
+					    netfs_i_cookie(&NFS_I(rreq->inode)->netfs));
+}
 
-	trace_nfs_fscache_read_page(inode, page);
-	if (PageChecked(page)) {
-		ClearPageChecked(page);
-		ret = 1;
-		goto out;
+static struct nfs_netfs_io_data *nfs_netfs_alloc(struct netfs_io_subrequest *sreq)
+{
+	struct nfs_netfs_io_data *netfs;
+
+	netfs = kzalloc(sizeof(*netfs), GFP_KERNEL_ACCOUNT);
+	if (!netfs)
+		return NULL;
+	netfs->sreq = sreq;
+	refcount_set(&netfs->refcount, 1);
+	spin_lock_init(&netfs->lock);
+	return netfs;
+}
+
+static bool nfs_netfs_clamp_length(struct netfs_io_subrequest *sreq)
+{
+	size_t	rsize = NFS_SB(sreq->rreq->inode->i_sb)->rsize;
+
+	sreq->len = min(sreq->len, rsize);
+	return true;
+}
+
+static void nfs_netfs_issue_read(struct netfs_io_subrequest *sreq)
+{
+	struct nfs_pageio_descriptor pgio;
+	struct inode *inode = sreq->rreq->inode;
+	struct nfs_open_context *ctx = sreq->rreq->netfs_priv;
+	struct page *page;
+	int err;
+	pgoff_t start = (sreq->start + sreq->transferred) >> PAGE_SHIFT;
+	pgoff_t last = ((sreq->start + sreq->len -
+			 sreq->transferred - 1) >> PAGE_SHIFT);
+	XA_STATE(xas, &sreq->rreq->mapping->i_pages, start);
+
+	nfs_pageio_init_read(&pgio, inode, false,
+			     &nfs_async_read_completion_ops);
+
+	pgio.pg_netfs = nfs_netfs_alloc(sreq); /* used in completion */
+	if (!pgio.pg_netfs)
+		return netfs_subreq_terminated(sreq, -ENOMEM, false);
+
+	xas_lock(&xas);
+	xas_for_each(&xas, page, last) {
+		/* nfs_pageio_add_page() may schedule() due to pNFS layout and other RPCs  */
+		xas_pause(&xas);
+		xas_unlock(&xas);
+		err = nfs_pageio_add_page(&pgio, ctx, page);
+		if (err < 0)
+			return netfs_subreq_terminated(sreq, err, false);
+		xas_lock(&xas);
 	}
-
-	ret = fscache_fallback_read_page(inode, page);
-	if (ret < 0) {
-		nfs_inc_fscache_stats(inode, NFSIOS_FSCACHE_PAGES_READ_FAIL);
-		SetPageChecked(page);
-		goto out;
-	}
-
-	/* Read completed synchronously */
-	nfs_inc_fscache_stats(inode, NFSIOS_FSCACHE_PAGES_READ_OK);
-	SetPageUptodate(page);
-	ret = 0;
-out:
-	trace_nfs_fscache_read_page_exit(inode, page, ret);
-	return ret;
+	xas_unlock(&xas);
+	nfs_pageio_complete_read(&pgio);
+	nfs_netfs_put(pgio.pg_netfs);
 }
 
-/*
- * Store a newly fetched page in fscache.  We can be certain there's no page
- * stored in the cache as yet otherwise we would've read it from there.
- */
-void __nfs_fscache_write_page(struct inode *inode, struct page *page)
+void nfs_netfs_read_initiate(struct nfs_pgio_header *hdr)
 {
-	int ret;
+	struct nfs_netfs_io_data        *netfs = hdr->netfs;
 
-	trace_nfs_fscache_write_page(inode, page);
+	if (!netfs)
+		return;
 
-	ret = fscache_fallback_write_page(inode, page, true);
-
-	if (ret != 0) {
-		nfs_inc_fscache_stats(inode, NFSIOS_FSCACHE_PAGES_WRITTEN_FAIL);
-		nfs_inc_fscache_stats(inode, NFSIOS_FSCACHE_PAGES_UNCACHED);
-	} else {
-		nfs_inc_fscache_stats(inode, NFSIOS_FSCACHE_PAGES_WRITTEN_OK);
-	}
-	trace_nfs_fscache_write_page_exit(inode, page, ret);
+	spin_lock(&netfs->lock);
+	atomic_inc(&netfs->rpcs);
+	netfs->rpc_byte_count += hdr->args.count;
+	spin_unlock(&netfs->lock);
 }
+
+void nfs_netfs_read_done(struct nfs_pgio_header *hdr)
+{
+	struct nfs_netfs_io_data        *netfs = hdr->netfs;
+
+	if (!netfs)
+		return;
+
+	spin_lock(&netfs->lock);
+	if (hdr->res.op_status) {
+		/*
+		 * Retryable errors such as BAD_STATEID will be re-issued,
+		 * so reduce the bytes and the RPC counts.
+		 */
+		netfs->rpc_byte_count -= hdr->args.count;
+		atomic_dec(&netfs->rpcs);
+	}
+	spin_unlock(&netfs->lock);
+}
+
+void nfs_netfs_read_completion(struct nfs_pgio_header *hdr)
+{
+	struct nfs_netfs_io_data        *netfs = hdr->netfs;
+	struct netfs_io_subrequest      *sreq;
+
+	if (!netfs)
+		return;
+
+	sreq = netfs->sreq;
+	if (test_bit(NFS_IOHDR_EOF, &hdr->flags))
+		__set_bit(NETFS_SREQ_CLEAR_TAIL, &sreq->flags);
+
+	spin_lock(&netfs->lock);
+	if (hdr->error)
+		netfs->error = hdr->error;
+	else
+		netfs->transferred += hdr->res.count;
+	spin_unlock(&netfs->lock);
+
+	/* Only the last RPC completion should call netfs_subreq_terminated() */
+	if (atomic_dec_and_test(&netfs->rpcs) &&
+	    (netfs->rpc_byte_count >= sreq->len)) {
+		netfs_subreq_terminated(sreq, netfs->error ?: netfs->transferred, false);
+		nfs_netfs_put(netfs);
+		hdr->netfs = NULL;
+	}
+}
+
+const struct netfs_request_ops nfs_netfs_ops = {
+	.init_request		= nfs_netfs_init_request,
+	.free_request		= nfs_netfs_free_request,
+	.begin_cache_operation	= nfs_netfs_begin_cache_operation,
+	.issue_read		= nfs_netfs_issue_read,
+	.clamp_length		= nfs_netfs_clamp_length
+};

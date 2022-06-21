@@ -30,7 +30,7 @@
 
 #define NFSDBG_FACILITY		NFSDBG_PAGECACHE
 
-static const struct nfs_pgio_completion_ops nfs_async_read_completion_ops;
+const struct nfs_pgio_completion_ops nfs_async_read_completion_ops;
 static const struct nfs_rw_ops nfs_rw_read_ops;
 
 static struct kmem_cache *nfs_rdata_cachep;
@@ -74,7 +74,7 @@ void nfs_pageio_init_read(struct nfs_pageio_descriptor *pgio,
 }
 EXPORT_SYMBOL_GPL(nfs_pageio_init_read);
 
-static void nfs_pageio_complete_read(struct nfs_pageio_descriptor *pgio)
+void nfs_pageio_complete_read(struct nfs_pageio_descriptor *pgio)
 {
 	struct nfs_pgio_mirror *pgm;
 	unsigned long npages;
@@ -110,20 +110,25 @@ EXPORT_SYMBOL_GPL(nfs_pageio_reset_read_mds);
 
 static void nfs_readpage_release(struct nfs_page *req, int error)
 {
-	struct inode *inode = d_inode(nfs_req_openctx(req)->dentry);
 	struct page *page = req->wb_page;
-
-	dprintk("NFS: read done (%s/%llu %d@%lld)\n", inode->i_sb->s_id,
-		(unsigned long long)NFS_FILEID(inode), req->wb_bytes,
-		(long long)req_offset(req));
 
 	if (nfs_error_is_fatal_on_server(error) && error != -ETIMEDOUT)
 		SetPageError(page);
 	if (nfs_page_group_sync_on_bit(req, PG_UNLOCKPAGE)) {
-		if (PageUptodate(page))
-			nfs_fscache_write_page(inode, page);
+#ifdef CONFIG_NFS_FSCACHE
+		struct inode *inode = d_inode(nfs_req_openctx(req)->dentry);
+
+		/*
+		 * If fscache is enabled, netfs will unlock pages.
+		 * Otherwise, we have to unlock the page here
+		 */
+		if (!netfs_inode(inode)->cache)
+			unlock_page(page);
+#else
 		unlock_page(page);
+#endif
 	}
+
 	nfs_release_request(req);
 }
 
@@ -177,6 +182,10 @@ static void nfs_read_completion(struct nfs_pgio_header *hdr)
 		nfs_list_remove_request(req);
 		nfs_readpage_release(req, error);
 	}
+#ifdef CONFIG_NFS_FSCACHE
+	nfs_netfs_read_completion(hdr);
+#endif
+
 out:
 	hdr->release(hdr);
 }
@@ -187,6 +196,9 @@ static void nfs_initiate_read(struct nfs_pgio_header *hdr,
 			      struct rpc_task_setup *task_setup_data, int how)
 {
 	rpc_ops->read_setup(hdr, msg);
+#ifdef CONFIG_NFS_FSCACHE
+	nfs_netfs_read_initiate(hdr);
+#endif
 	trace_nfs_initiate_read(hdr);
 }
 
@@ -202,7 +214,7 @@ nfs_async_read_error(struct list_head *head, int error)
 	}
 }
 
-static const struct nfs_pgio_completion_ops nfs_async_read_completion_ops = {
+const struct nfs_pgio_completion_ops nfs_async_read_completion_ops = {
 	.error_cleanup = nfs_async_read_error,
 	.completion = nfs_read_completion,
 };
@@ -219,6 +231,9 @@ static int nfs_readpage_done(struct rpc_task *task,
 	if (status != 0)
 		return status;
 
+#ifdef CONFIG_NFS_FSCACHE
+	nfs_netfs_read_done(hdr);
+#endif
 	nfs_add_stats(inode, NFSIOS_SERVERREADBYTES, hdr->res.count);
 	trace_nfs_readpage_done(task, hdr);
 
@@ -294,12 +309,6 @@ nfs_pageio_add_page(struct nfs_pageio_descriptor *pgio,
 
 	aligned_len = min_t(unsigned int, ALIGN(len, rsize), PAGE_SIZE);
 
-	if (!IS_SYNC(page->mapping->host)) {
-		error = nfs_fscache_read_page(page->mapping->host, page);
-		if (error == 0)
-			goto out_unlock;
-	}
-
 	new = nfs_create_request(ctx, page, 0, aligned_len);
 	if (IS_ERR(new))
 		goto out_error;
@@ -315,8 +324,6 @@ nfs_pageio_add_page(struct nfs_pageio_descriptor *pgio,
 	return 0;
 out_error:
 	error = PTR_ERR(new);
-out_unlock:
-	unlock_page(page);
 out:
 	return error;
 }
@@ -355,6 +362,12 @@ int nfs_read_folio(struct file *file, struct folio *folio)
 	if (NFS_STALE(inode))
 		goto out_unlock;
 
+#ifdef CONFIG_NFS_FSCACHE
+	if (netfs_inode(inode)->cache) {
+		ret = netfs_read_folio(file, folio);
+		goto out;
+	}
+#endif
 	if (file == NULL) {
 		ret = -EBADF;
 		ctx = nfs_find_open_context(inode, NULL, FMODE_READ);
@@ -368,8 +381,10 @@ int nfs_read_folio(struct file *file, struct folio *folio)
 			     &nfs_async_read_completion_ops);
 
 	ret = nfs_pageio_add_page(&pgio, ctx, page);
-	if (ret)
-		goto out;
+	if (ret) {
+		put_nfs_open_context(ctx);
+		goto out_unlock;
+	}
 
 	nfs_pageio_complete_read(&pgio);
 	ret = pgio.pg_error < 0 ? pgio.pg_error : 0;
@@ -378,12 +393,12 @@ int nfs_read_folio(struct file *file, struct folio *folio)
 		if (!PageUptodate(page) && !ret)
 			ret = xchg(&ctx->error, 0);
 	}
-out:
 	put_nfs_open_context(ctx);
-	trace_nfs_aop_readpage_done(inode, page, ret);
-	return ret;
+	goto out;
+
 out_unlock:
 	unlock_page(page);
+out:
 	trace_nfs_aop_readpage_done(inode, page, ret);
 	return ret;
 }
@@ -405,6 +420,13 @@ void nfs_readahead(struct readahead_control *ractl)
 	if (NFS_STALE(inode))
 		goto out;
 
+#ifdef CONFIG_NFS_FSCACHE
+	if (netfs_inode(inode)->cache) {
+		netfs_readahead(ractl);
+		ret = 0;
+		goto out;
+	}
+#endif
 	if (file == NULL) {
 		ret = -EBADF;
 		ctx = nfs_find_open_context(inode, NULL, FMODE_READ);

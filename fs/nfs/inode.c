@@ -2249,6 +2249,9 @@ struct inode *nfs_alloc_inode(struct super_block *sb)
 #ifdef CONFIG_NFS_V4_2
 	nfsi->xattr_cache = NULL;
 #endif
+#ifdef CONFIG_NFS_FSCACHE
+	netfs_inode_init(&nfsi->netfs, &nfs_netfs_ops);
+#endif
 	return NFSI_TO_INODE(nfsi);
 }
 EXPORT_SYMBOL_GPL(nfs_alloc_inode);
