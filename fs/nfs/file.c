@@ -532,6 +532,7 @@ const struct address_space_operations nfs_file_aops = {
 	.release_folio = nfs_release_folio,
 	.migrate_folio = nfs_migrate_folio,
 	.launder_folio = nfs_launder_folio,
+	.removing_folio = netfs_removing_folio,
 	.is_dirty_writeback = nfs_check_dirty_writeback,
 	.error_remove_page = generic_error_remove_page,
 	.swap_activate = nfs_swap_activate,

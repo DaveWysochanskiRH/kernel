@@ -61,6 +61,7 @@ static int nfs4_write_inode(struct inode *inode, struct writeback_control *wbc)
  */
 static void nfs4_evict_inode(struct inode *inode)
 {
+	clear_bit(AS_NOTIFY_REMOVING_FOLIO, &inode->i_mapping->flags);
 	truncate_inode_pages_final(&inode->i_data);
 	clear_inode(inode);
 	/* If we are holding a delegation, return and free it */

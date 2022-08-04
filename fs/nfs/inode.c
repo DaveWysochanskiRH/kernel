@@ -130,6 +130,7 @@ EXPORT_SYMBOL_GPL(nfs_clear_inode);
 
 void nfs_evict_inode(struct inode *inode)
 {
+	clear_bit(AS_NOTIFY_REMOVING_FOLIO, &inode->i_mapping->flags);
 	truncate_inode_pages_final(&inode->i_data);
 	clear_inode(inode);
 	nfs_clear_inode(inode);

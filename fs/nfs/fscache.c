@@ -180,6 +180,9 @@ void nfs_fscache_init_inode(struct inode *inode)
 					       &auxdata,      /* aux_data */
 					       sizeof(auxdata),
 					       i_size_read(inode));
+	if (netfs_inode(inode)->cache)
+		set_bit(AS_NOTIFY_REMOVING_FOLIO, &inode->i_mapping->flags);
+
 }
 
 /*
