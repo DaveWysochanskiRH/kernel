@@ -35,8 +35,6 @@ EXPORT_SYMBOL(netfs_invalidate_folio);
  */
 bool netfs_release_folio(struct folio *folio, gfp_t gfp)
 {
-	struct netfs_inode *ctx = netfs_inode(folio_inode(folio));
-
 	if (folio_test_private(folio))
 		return false;
 	if (folio_test_fscache(folio)) {
@@ -45,7 +43,17 @@ bool netfs_release_folio(struct folio *folio, gfp_t gfp)
 		folio_wait_fscache(folio);
 	}
 
-	fscache_note_page_release(netfs_i_cookie(ctx));
 	return true;
 }
 EXPORT_SYMBOL(netfs_release_folio);
+
+/**
+ * netfs_removing_folio - Notification of a folio about to be removed
+ * @mapping: The pagecache about to be altered
+ * @folio: The folio about to be removed
+ */
+void netfs_removing_folio(struct address_space *mapping, struct folio *folio)
+{
+	fscache_note_page_release(netfs_i_cookie(netfs_inode(mapping->host)));
+}
+EXPORT_SYMBOL(netfs_removing_folio);
