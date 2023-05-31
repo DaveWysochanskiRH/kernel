@@ -2,7 +2,7 @@
 VERSION = 6
 PATCHLEVEL = 4
 SUBLEVEL = 0
-EXTRAVERSION = -rc3-dhowells-optimisation
+EXTRAVERSION = -rc3-dhowells-optimisation-v2
 NAME = Hurr durr I'ma ninja sloth
 
 # *DOCUMENTATION*
